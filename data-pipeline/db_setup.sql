@@ -1,4 +1,3 @@
-CREATE DATABASE stock_db;
 CREATE TABLE stocks (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(10) UNIQUE NOT NULL,

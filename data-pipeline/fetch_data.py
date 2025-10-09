@@ -3,8 +3,6 @@ import requests
 import psycopg2
 from dotenv import load_dotenv
 from datetime import datetime
-
-# Load environment variables
 load_dotenv()
 
 API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
@@ -171,9 +169,22 @@ if __name__ == "__main__":
         print("Failed to set up database tables")
         exit(1)
     
-    # Fetch and store data
-    stock_data = fetch_stock_data("AAPL")
-    if stock_data:
-        store_stock_data("AAPL", stock_data)
-    else:
-        print("Failed to fetch stock data")
+    # --- MODIFICATION START ---
+
+    # 1. Define a list of companies you want to track
+    stocks_to_fetch = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"]
+    print(f"Attempting to process symbols: {stocks_to_fetch}")
+
+    # 2. Loop through each symbol in the list
+    for symbol in stocks_to_fetch:
+        print(f"\n--- Processing {symbol} ---")
+        
+        # 3. Fetch and store data for the current symbol
+        stock_data = fetch_stock_data(symbol)
+        if stock_data:
+            store_stock_data(symbol, stock_data)
+        else:
+            # Add a more informative message here
+            print(f"Could not fetch data for {symbol}. This may be due to an invalid symbol or API rate limits.")
+    
+    print("\nPipeline finished.")

@@ -1,83 +1,81 @@
 import os
+import sys
 import psycopg2
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 
-# Load environment variables from the .env file in the project root
-# The .env file should be in the 'stock-predi' folder, not the 'backend' folder
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+# --- This block is new ---
+# Add the parent directory of 'data-pipeline' to the Python path
+# This allows us to import from a sibling directory
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
+# --- End of new block ---
 
-# Initialize the FastAPI app
+load_dotenv()
 app = FastAPI()
-
-# Get the database URL from environment variables
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 def get_db_connection():
-    """Establishes a connection to the database."""
     if not DATABASE_URL:
         raise Exception("DATABASE_URL environment variable not set.")
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
+        return psycopg2.connect(DATABASE_URL)
     except psycopg2.OperationalError as e:
         print(f"FATAL: Could not connect to the database: {e}")
         raise
 
-@app.get("/")
-def read_root():
-    """A simple root endpoint to confirm the API is running."""
-    return {"message": "Stock Prediction API is running."}
-
-
-@app.get("/api/stocks/{symbol}")
-def get_stock_prices(symbol: str):
-    """
-    Fetches all historical price data for a given stock symbol
-    from the database.
-    """
-    print(f"Received request for symbol: {symbol}")
+def query_stock_data(symbol: str):
+    """Queries the database for a symbol and returns formatted data."""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-
         cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol.upper(),))
         stock_record = cur.fetchone()
 
         if not stock_record:
-            raise HTTPException(status_code=404, detail=f"Stock symbol '{symbol}' not found in the database.")
+            return None # Signal that the stock was not found
 
         stock_id = stock_record[0]
-
-        cur.execute("""
-            SELECT date, open, high, low, close, volume 
-            FROM stock_prices 
-            WHERE stock_id = %s 
-            ORDER BY date DESC
-        """, (stock_id,))
-        
+        cur.execute("SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = %s ORDER BY date DESC", (stock_id,))
         prices = cur.fetchall()
-        
-        price_data = [
-            {
-                "date": row[0].isoformat(),
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": int(row[5])
-            } for row in prices
-        ]
-
         cur.close()
-        return {"symbol": symbol.upper(), "prices": price_data}
 
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        price_data = [{"date": r[0].isoformat(), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": int(r[5])} for r in prices]
+        return {"symbol": symbol.upper(), "prices": price_data}
     finally:
         if conn:
             conn.close()
+
+@app.get("/")
+def read_root():
+    return {"message": "Stock Prediction API is running."}
+
+@app.get("/api/stocks/{symbol}")
+def get_stock_prices(symbol: str):
+    """
+    Fetches historical price data for a stock.
+    If not in the database, it fetches from the API, stores it, then returns it.
+    """
+    print(f"Received request for symbol: {symbol}")
+    
+    # 1. Try to get data from our database first (the cache)
+    data = query_stock_data(symbol)
+    
+    if data:
+        print(f"Found {symbol} in database. Returning cached data.")
+        return data
+        
+    # 2. If not in DB, fetch from the external API
+    print(f"'{symbol}' not in DB. Fetching from Alpha Vantage...")
+    new_stock_data = fetch_stock_data(symbol)
+    
+    if not new_stock_data:
+        raise HTTPException(status_code=404, detail=f"Could not retrieve data for '{symbol}' from external API. It may be an invalid symbol.")
+        
+    # 3. Store the new data in our database
+    store_stock_data(symbol, new_stock_data)
+    
+    # 4. Now, query it from our database to ensure consistency and return it
+    print(f"Successfully stored {symbol}. Now returning data from DB.")
+    return query_stock_data(symbol)

@@ -1,8 +1,11 @@
 import os
 import sys
 import psycopg2
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
+import joblib
+from pydantic import BaseModel
 
 # --- This block is new ---
 # Add the parent directory of 'data-pipeline' to the Python path
@@ -14,6 +17,10 @@ from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 load_dotenv()
 app = FastAPI()
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Load the trained model when the application starts
+MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'stock_predictor.joblib')
+model = joblib.load(MODEL_PATH)
 
 def get_db_connection():
     if not DATABASE_URL:
@@ -79,3 +86,27 @@ def get_stock_prices(symbol: str):
     # 4. Now, query it from our database to ensure consistency and return it
     print(f"Successfully stored {symbol}. Now returning data from DB.")
     return query_stock_data(symbol)
+
+# --- FIX STARTS HERE ---
+
+# Define the data model for the prediction input.
+# This tells FastAPI what the request body should look like.
+class StockFeatures(BaseModel):
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+@app.post("/api/predict")
+def predict_stock_price(features: StockFeatures):
+    """Predicts the next day's closing price based on current day's features."""
+    try:
+        # Create a DataFrame in the same format as the training data
+        input_data = pd.DataFrame([features.dict()])
+        prediction = model.predict(input_data)[0]
+        return {"predicted_next_day_close": prediction}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+
+

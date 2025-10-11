@@ -3,6 +3,7 @@ import sys
 import psycopg2
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
@@ -16,6 +17,27 @@ from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 
 load_dotenv()
 app = FastAPI()
+
+# --- FIX STARTS HERE ---
+
+# 2. Add the CORS middleware configuration
+origins = [
+    "http://localhost",
+    "http://localhost:8080",
+    "http://127.0.0.1:5500", # Common for VS Code Live Server
+    "null" # Important for allowing local file:// access
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allows all headers
+)
+
+# --- FIX ENDS HERE ---
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Load the trained model when the application starts
@@ -87,9 +109,7 @@ def get_stock_prices(symbol: str):
     print(f"Successfully stored {symbol}. Now returning data from DB.")
     return query_stock_data(symbol)
 
-# --- FIX STARTS HERE ---
-
-# Define the data model for the prediction input.
+# --- Define the data model for the prediction input.
 # This tells FastAPI what the request body should look like.
 class StockFeatures(BaseModel):
     open: float

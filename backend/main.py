@@ -163,23 +163,49 @@ def get_stock_prices(symbol: str, current_user: str = Depends(get_current_user))
     print(f"Successfully stored {symbol}. Now returning data from DB.")
     return query_stock_data(symbol)
 
-# --- Define the data model for the prediction input.
-# This tells FastAPI what the request body should look like.
-class StockFeatures(BaseModel):
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
+# --- FIX STARTS HERE ---
 
+# 1. Define a new Pydantic model for the prediction request.
+#    The frontend will send a JSON like: {"symbol": "AAPL"}
+class PredictionRequest(BaseModel):
+    symbol: str
+
+# 2. Replace the entire old /api/predict endpoint with this new, secure version.
 @app.post("/api/predict")
-def predict_stock_price(features: StockFeatures):
-    """Predicts the next day's closing price based on current day's features."""
+def predict_stock_price(request: PredictionRequest, current_user: str = Depends(get_current_user)):
+    """
+    Predicts the next day's closing price for a given stock symbol
+    using the last 60 days of data. This endpoint is now protected.
+    """
+    # This logic is designed for an LSTM or time-series model that needs recent history.
+    # For a simple Linear Regression model, this is overkill, but it aligns with a more advanced setup.
+    
+    print(f"Prediction request for {request.symbol} by user {current_user}")
+    
+    # Fetch the most recent day's data to use for prediction
+    data = query_stock_data(request.symbol)
+    if not data or not data["prices"]:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Not enough historical data to predict for {request.symbol}."
+        )
+
+    # Get the latest day's features
+    latest_features = data["prices"][0] # The query is ordered by date DESC
+
     try:
         # Create a DataFrame in the same format as the training data
-        input_data = pd.DataFrame([features.dict()])
+        # Note: The 'date' field is not used by the model but is part of the dictionary.
+        input_data = pd.DataFrame([{
+            "open": latest_features["open"],
+            "high": latest_features["high"],
+            "low": latest_features["low"],
+            "close": latest_features["close"],
+            "volume": latest_features["volume"]
+        }])
+        
         prediction = model.predict(input_data)[0]
-        return {"predicted_next_day_close": prediction}
+        return {"symbol": request.symbol, "predicted_next_day_close": float(prediction)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
 

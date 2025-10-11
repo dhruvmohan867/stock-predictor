@@ -2,8 +2,10 @@ import os
 import sys
 import psycopg2
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
 from dotenv import load_dotenv
 
@@ -47,9 +49,24 @@ def train_and_save_model():
     model = LinearRegression()
     model.fit(X_train, y_train)
 
-    # Evaluate the model
-    score = model.score(X_test, y_test)
-    print(f"Model R^2 score: {score:.2f}")
+    # --- FIX STARTS HERE: Comprehensive Model Evaluation ---
+
+    # 3. Make predictions on the test set (the "future" data)
+    y_pred = model.predict(X_test)
+
+    # 4. Calculate and print multiple performance metrics
+    print("\n--- Model Evaluation ---")
+    r2 = r2_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+
+    print(f"R-squared (R²): {r2:.4f}")
+    print(f"Mean Absolute Error (MAE): ${mae:.2f}")
+    print(f"Root Mean Squared Error (RMSE): ${rmse:.2f}")
+    print("------------------------\n")
+
+    # --- FIX ENDS HERE ---
 
     # Save the trained model to a file
     model_path = os.path.join(os.path.dirname(__file__), 'stock_predictor.joblib')

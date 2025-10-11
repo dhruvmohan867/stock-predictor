@@ -39,9 +39,9 @@ def train_and_save_model():
     X = df[features]
     y = df['target']
 
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
+    split_index = int(len(df) * 0.8)
+    X_train, y_train = X[:split_index], y[:split_index]
+    X_test, y_test = X[split_index:], y[split_index:]
     # Train a simple Linear Regression model
     print("Training Linear Regression model...")
     model = LinearRegression()

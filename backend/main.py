@@ -9,6 +9,11 @@ from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
 from datetime import timedelta
+import numpy as np
+# --- FIX STARTS HERE ---
+# Change from 'tensorflow.keras' to just 'keras'
+from keras.models import load_model
+# --- FIX ENDS HERE ---
 
 # --- This block is new ---
 # Add the parent directory of 'data-pipeline' to the Python path
@@ -49,8 +54,11 @@ app.add_middleware(
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Load the trained model when the application starts
-MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'stock_predictor.joblib')
-model = joblib.load(MODEL_PATH)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'stock_predictor_lstm.keras')
+SCALER_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'data_scaler.joblib')
+
+model = load_model(MODEL_PATH)
+scaler = joblib.load(SCALER_PATH)
 
 def get_db_connection():
     if not DATABASE_URL:
@@ -163,24 +171,58 @@ def get_stock_prices(symbol: str, current_user: str = Depends(get_current_user))
     print(f"Successfully stored {symbol}. Now returning data from DB.")
     return query_stock_data(symbol)
 
-# --- Define the data model for the prediction input.
-# This tells FastAPI what the request body should look like.
-class StockFeatures(BaseModel):
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
+# --- REPLACE THE PREDICTION ENDPOINT ---
+
+# This Pydantic model defines the expected input for our new prediction endpoint
+class PredictionRequest(BaseModel):
+    symbol: str
 
 @app.post("/api/predict")
-def predict_stock_price(features: StockFeatures):
-    """Predicts the next day's closing price based on current day's features."""
-    try:
-        # Create a DataFrame in the same format as the training data
-        input_data = pd.DataFrame([features.dict()])
-        prediction = model.predict(input_data)[0]
-        return {"predicted_next_day_close": prediction}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+def predict_stock_price(request: PredictionRequest, current_user: str = Depends(get_current_user)):
+    """
+    Predicts the next day's closing price for a given stock symbol
+    using the last 60 days of data.
+    """
+    LOOK_BACK_PERIOD = 60
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Fetch the last 60 days of closing prices for the requested symbol
+    query = """
+        SELECT close FROM stock_prices p
+        JOIN stocks s ON p.stock_id = s.id
+        WHERE s.symbol = %s
+        ORDER BY p.date DESC
+        LIMIT %s
+    """
+    cur.execute(query, (request.symbol.upper(), LOOK_BACK_PERIOD))
+    
+    recent_prices = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if len(recent_prices) < LOOK_BACK_PERIOD:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Not enough historical data to predict for {request.symbol}. Need {LOOK_BACK_PERIOD} days, found {len(recent_prices)}."
+        )
+
+    # Prepare the data for the model
+    # 1. Extract the closing prices and reverse to get chronological order
+    real_prices = [float(p[0]) for p in recent_prices][::-1]
+    
+    # 2. Scale the data using the same scaler from training
+    scaled_prices = scaler.transform(np.array(real_prices).reshape(-1, 1))
+    
+    # 3. Reshape for the LSTM model
+    input_data = np.reshape(scaled_prices, (1, LOOK_BACK_PERIOD, 1))
+    
+    # 4. Make the prediction
+    predicted_price_scaled = model.predict(input_data)
+    
+    # 5. Inverse transform the prediction to get the actual price value
+    predicted_price = scaler.inverse_transform(predicted_price_scaled)
+    
+    return {"symbol": request.symbol, "predicted_next_day_close": float(predicted_price[0][0])}
 
 

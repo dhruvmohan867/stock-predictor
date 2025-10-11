@@ -2,18 +2,26 @@ import os
 import sys
 import psycopg2
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends , status
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
+from datetime import timedelta
 
 # --- This block is new ---
 # Add the parent directory of 'data-pipeline' to the Python path
 # This allows us to import from a sibling directory
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 # --- End of new block ---
+
+# --- MODIFICATION START ---
+from auth import get_password_hash, verify_password, create_access_token, get_current_user
+# --- MODIFICATION END ---
 
 load_dotenv()
 app = FastAPI()
@@ -80,13 +88,59 @@ def query_stock_data(symbol: str):
 def read_root():
     return {"message": "Stock Prediction API is running."}
 
+@app.post("/register")
+def register_user(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Handles user registration."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    # Check if user already exists
+    cur.execute("SELECT id FROM users WHERE username = %s", (form_data.username,))
+    if cur.fetchone():
+        raise HTTPException(status_code=400, detail="Username already registered")
+        
+    hashed_password = get_password_hash(form_data.password)
+    cur.execute(
+        "INSERT INTO users (username, hashed_password) VALUES (%s, %s)",
+        (form_data.username, hashed_password)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"message": f"User '{form_data.username}' registered successfully"}
+
+@app.post("/token")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Handles user login and returns a JWT."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cur.execute("SELECT username, hashed_password FROM users WHERE username = %s", (form_data.username,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    if not user or not verify_password(form_data.password, user[1]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user[0]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# --- PROTECT THE ENDPOINT ---
 @app.get("/api/stocks/{symbol}")
-def get_stock_prices(symbol: str):
+def get_stock_prices(symbol: str, current_user: str = Depends(get_current_user)):
     """
     Fetches historical price data for a stock.
-    If not in the database, it fetches from the API, stores it, then returns it.
+    This endpoint is now protected and requires a valid token.
     """
-    print(f"Received request for symbol: {symbol}")
+    print(f"Request for {symbol} by authenticated user: {current_user}")
     
     # 1. Try to get data from our database first (the cache)
     data = query_stock_data(symbol)

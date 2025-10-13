@@ -20,7 +20,7 @@ from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 # --- End of new block ---
 
 # --- MODIFICATION START ---
-from auth import get_password_hash, verify_password, create_access_token, get_current_user
+from .auth import get_password_hash, verify_password, create_access_token, get_current_user
 # --- MODIFICATION END ---
 
 load_dotenv()
@@ -31,9 +31,10 @@ app = FastAPI()
 # 2. Add the CORS middleware configuration
 origins = [
     "http://localhost",
-    "http://localhost:8080",
-    "http://127.0.0.1:5500", # Common for VS Code Live Server
-    "null" # Important for allowing local file:// access
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5500",
+    "https://your-frontend-name.onrender.com",
 ]
 
 app.add_middleware(

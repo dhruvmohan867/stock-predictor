@@ -5,30 +5,34 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from dotenv import load_dotenv
-
-load_dotenv()
-
+import bcrypt
 # --- Configuration ---
-# IMPORTANT: This should be a long, random string stored in your .env file
-SECRET_KEY = os.getenv("SECRET_KEY", "a_very_bad_default_secret_key") 
+SECRET_KEY = os.getenv("SECRET_KEY", "a_very_secret_key_that_should_be_in_env")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+print("bcrypt version:", bcrypt.__version__)
+# OAuth2 scheme for dependency injection
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # --- Password Hashing ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def verify_password(plain_password, hashed_password):
-    """Checks if a plain password matches a hashed one."""
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verifies a plain password against a hashed one.
+    Truncates the plain password to 72 bytes to prevent bcrypt errors.
+    """
+    return pwd_context.verify(plain_password[:72], hashed_password)
 
-def get_password_hash(password):
-    """Hashes a plain password."""
-    return pwd_context.hash(password)
+def get_password_hash(password: str) -> str:
+    """
+    Hashes a plain password.
+    Truncates the password to 72 bytes to prevent bcrypt errors.
+    """
+    return pwd_context.hash(password[:72])
 
-# --- JWT Creation ---
+# --- JWT Token Creation ---
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Creates a new JWT access token."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -38,12 +42,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-# --- User Verification (FastAPI Dependency) ---
-# This creates a dependency that will look for a token in the request's "Authorization" header.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
+# --- Current User Dependency ---
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    """Decodes the token and returns the username if valid."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -56,4 +56,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    return username
+    # In a real app, you would fetch the user from the DB here
+    # For this project, the username is sufficient
+    return {"username": username}

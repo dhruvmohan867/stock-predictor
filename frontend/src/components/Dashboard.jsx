@@ -48,13 +48,7 @@ const Dashboard = ({ onLogout }) => {
 
   // Automatically load data for a default stock when the component mounts
   useEffect(() => {
-    // --- MODIFICATION START ---
-    // Only execute the search if a token exists in local storage.
-    // This prevents a race condition on initial login.
-    if (localStorage.getItem('token')) {
-      executeSearch('MSFT'); // Load Microsoft data by default
-    }
-    // --- MODIFICATION END ---
+    executeSearch('MSFT'); // Load Microsoft data by default
   }, []);
 
   const handlePredict = async () => {

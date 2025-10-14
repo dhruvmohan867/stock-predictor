@@ -1,16 +1,51 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Loader, Eye, EyeOff } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const API_BASE = "http://localhost:8000";
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 const AuthForm = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');           // <-- new
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Google callback
+  const handleGoogleCredential = async (response) => {
+    try {
+      const res = await fetch(`${API_BASE}/google-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: response.credential }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Google sign-in failed');
+
+      localStorage.setItem('token', data.access_token);
+      localStorage.setItem('username', data.username);
+      onLogin();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Render Google button
+  useEffect(() => {
+    if (window.google && GOOGLE_CLIENT_ID) {
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleGoogleCredential,
+      });
+      window.google.accounts.id.renderButton(
+        document.getElementById('googleSignInDiv'),
+        { theme: 'filled_blue', size: 'large', shape: 'rectangular', width: '100%' }
+      );
+    }
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -18,14 +53,16 @@ const AuthForm = ({ onLogin }) => {
     setLoading(true);
 
     try {
-      const formData = new URLSearchParams({ username, password });
+      const formData = isLogin
+        ? new URLSearchParams({ username, password })
+        : new URLSearchParams({ username, password, email }); // <-- include email on signup
+
       const endpoint = isLogin ? '/token' : '/register';
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData,
       });
-
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Request failed');
 
@@ -34,7 +71,7 @@ const AuthForm = ({ onLogin }) => {
         localStorage.setItem('username', username);
         onLogin();
       } else {
-        setIsLogin(true); // Switch to login view after successful registration
+        setIsLogin(true);
         setError('Registration successful! Please sign in.');
         setPassword('');
       }
@@ -75,6 +112,20 @@ const AuthForm = ({ onLogin }) => {
             required
           />
         </div>
+
+        {!isLogin && (                                    // <-- email only on Sign Up
+          <div>
+            <label className="text-xs font-medium text-gray-400">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full mt-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+              placeholder="your@email.com"
+              required
+            />
+          </div>
+        )}
 
         <div>
           <label className="text-xs font-medium text-gray-400">Password</label>
@@ -134,6 +185,10 @@ const AuthForm = ({ onLogin }) => {
           )}
         </motion.button>
       </form>
+
+      <div className="mt-6">
+        <div id="googleSignInDiv" className="w-full flex justify-center" />
+      </div>
 
       <div className="text-center mt-8 text-sm">
         <p>

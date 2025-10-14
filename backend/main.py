@@ -2,13 +2,16 @@ import os
 import sys
 import psycopg2
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends , status
+from fastapi import FastAPI, HTTPException, Depends , status, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
 from datetime import timedelta
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+import secrets
 
 # --- This block is new ---
 # Add the parent directory of 'data-pipeline' to the Python path
@@ -90,25 +93,83 @@ def read_root():
     return {"message": "Stock Prediction API is running."}
 
 @app.post("/register")
-def register_user(form_data: OAuth2PasswordRequestForm = Depends()):
-    """Handles user registration."""
+def register_user(
+    username: str = Form(...),
+    password: str = Form(...),
+    email: str = Form(...)
+):
+    """User registration with email."""
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    # Check if user already exists
-    cur.execute("SELECT id FROM users WHERE username = %s", (form_data.username,))
+
+    # Check uniqueness
+    cur.execute("SELECT 1 FROM users WHERE username = %s OR email = %s", (username, email))
     if cur.fetchone():
-        raise HTTPException(status_code=400, detail="Username already registered")
-        
-    hashed_password = get_password_hash(form_data.password)
+        cur.close(); conn.close()
+        raise HTTPException(status_code=400, detail="Username or email already registered")
+
+    hashed_password = get_password_hash(password)
     cur.execute(
-        "INSERT INTO users (username, hashed_password) VALUES (%s, %s)",
-        (form_data.username, hashed_password)
+        "INSERT INTO users (username, email, hashed_password) VALUES (%s, %s, %s)",
+        (username, email, hashed_password)
     )
     conn.commit()
-    cur.close()
-    conn.close()
-    return {"message": f"User '{form_data.username}' registered successfully"}
+    cur.close(); conn.close()
+    return {"message": f"User '{username}' registered successfully"}
+
+# --- Google Sign-In ---
+class GoogleLoginRequest(BaseModel):
+    credential: str  # Google ID token (JWT) from frontend
+
+@app.post("/google-login")
+def google_login(payload: GoogleLoginRequest):
+    CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+    if not CLIENT_ID:
+        raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not configured")
+
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            payload.credential,
+            google_requests.Request(),
+            CLIENT_ID
+        )
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    email = idinfo.get("email")
+    sub = idinfo.get("sub")
+    username_base = (idinfo.get("name") or email.split("@")[0]).replace(" ", "_")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT username FROM users WHERE email = %s", (email,))
+    row = cur.fetchone()
+
+    if row:
+        username = row[0]
+    else:
+        # Ensure unique username
+        username = username_base
+        cur.execute("SELECT 1 FROM users WHERE username = %s", (username,))
+        if cur.fetchone():
+            username = f"{username_base}_{sub[:6]}"
+
+        # Store random password hash (not used by Google users)
+        random_pwd_hash = get_password_hash(secrets.token_urlsafe(16))
+        cur.execute(
+            "INSERT INTO users (username, email, hashed_password, google_id) VALUES (%s, %s, %s, %s) RETURNING username",
+            (username, email, random_pwd_hash, sub)
+        )
+        username = cur.fetchone()[0]
+        conn.commit()
+
+    cur.close(); conn.close()
+
+    access_token = create_access_token(
+        data={"sub": username},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    return {"access_token": access_token, "token_type": "bearer", "username": username}
 
 @app.post("/token")
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):

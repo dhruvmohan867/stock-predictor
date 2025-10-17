@@ -90,8 +90,18 @@ app.add_middleware(
 # --- FIX ENDS HERE ---
 
 # Load the trained model when the application starts
-MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'stock_predictor.joblib')
-model = joblib.load(MODEL_PATH)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'ml_model', 'stock_predictor.joblib')
+
+try:
+    model = joblib.load(MODEL_PATH)
+    print(f"✓ ML model loaded successfully from {MODEL_PATH}")
+except FileNotFoundError:
+    print(f"⚠️ Warning: Model file not found at {MODEL_PATH}")
+    print("Predictions will not work until you train and save the model.")
+    model = None
+except Exception as e:
+    print(f"⚠️ Error loading model: {e}")
+    model = None
 
 def query_stock_data(symbol: str):
     """Queries the database for a symbol and returns formatted data."""
@@ -259,13 +269,16 @@ class PredictionRequest(BaseModel):
 
 # 2. Replace the entire old /api/predict endpoint with this new, secure version.
 @app.post("/api/predict")
-def predict_stock_price(request: PredictionRequest, current_user: str = Depends(auth.get_current_user)):  # Use auth.
+def predict_stock_price(request: PredictionRequest, current_user: str = Depends(auth.get_current_user)):
     """
     Predicts the next day's closing price for a given stock symbol
     using the last 60 days of data. This endpoint is now protected.
     """
-    # This logic is designed for an LSTM or time-series model that needs recent history.
-    # For a simple Linear Regression model, this is overkill, but it aligns with a more advanced setup.
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ML model not loaded. Please contact the administrator."
+        )
     
     print(f"Prediction request for {request.symbol} by user {current_user}")
     

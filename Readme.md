@@ -2,7 +2,7 @@
 
 A full-stack web application that fetches real-time stock data, stores it in a PostgreSQL database, and uses machine learning to predict next-day closing prices. Built with FastAPI, React, and scikit-learn.
 
-![Stock Predictor Dashboard](https://via.placeholder.com/800x400?text=Add+Your+Screenshot+Here)
+![Stock Predictor Dashboard](./frontend/public/Dashboard.png)
 
 ## ✨ Features
 
@@ -242,4 +242,3 @@ Project Link: [https://github.com/yourusername/stock-predi](https://github.com/y
 ---
 
 Made with ❤️ by [Your Name]
-```

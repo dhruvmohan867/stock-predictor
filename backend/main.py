@@ -1,6 +1,6 @@
 import os
 import sys
-import psycopg2
+import psycopg  # instead of psycopg2
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Depends , status, Form
 from fastapi.security import OAuth2PasswordRequestForm
@@ -60,8 +60,8 @@ def get_db_connection():
     dsn = _normalize_dsn(dsn)
 
     try:
-        return psycopg2.connect(dsn)  # sslmode handled in DSN
-    except psycopg2.OperationalError as e:
+        return psycopg.connect(dsn)  # API is identical
+    except psycopg.OperationalError as e:
         # Common causes: wrong host, no internet/DNS, wrong password, missing sslmode
         raise HTTPException(
             status_code=500,

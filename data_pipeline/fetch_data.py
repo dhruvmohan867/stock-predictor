@@ -1,6 +1,6 @@
 import os
 import requests
-import psycopg2
+import psycopg  # Changed from psycopg2
 from dotenv import load_dotenv
 from datetime import datetime
 load_dotenv()
@@ -11,7 +11,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def create_tables_if_not_exist():
     """Create database tables if they don't exist"""
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg.connect(DATABASE_URL)
         cur = conn.cursor()
         
         # Create stocks table
@@ -95,7 +95,7 @@ def store_stock_data(symbol, stock_data):
         return
     
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg.connect(DATABASE_URL)
         cur = conn.cursor()
         
         # Insert or get stock info

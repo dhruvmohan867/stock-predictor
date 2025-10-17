@@ -27,6 +27,47 @@ from .auth import get_password_hash, verify_password, create_access_token, get_c
 # --- MODIFICATION END ---
 
 load_dotenv()
+
+def _build_dsn_from_pg_env():
+    """Optionally build DSN from PG* env vars if DATABASE_URL is not set."""
+    host = os.getenv("PGHOST")
+    db   = os.getenv("PGDATABASE")
+    user = os.getenv("PGUSER")
+    pwd  = os.getenv("PGPASSWORD")
+    port = os.getenv("PGPORT", "5432")
+    if all([host, db, user, pwd]):
+        return f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
+    return None
+
+def _normalize_dsn(dsn: str) -> str:
+    """Ensure sslmode=require for Supabase and return normalized DSN."""
+    if "supabase.co" in dsn and "sslmode=" not in dsn:
+        sep = "&" if "?" in dsn else "?"
+        dsn = f"{dsn}{sep}sslmode=require"
+    return dsn
+
+def get_db_connection():
+    """
+    Return a psycopg2 connection or raise HTTPException with a precise reason.
+    Fixes 'could not translate host name' by guiding to correct DATABASE_URL.
+    """
+    dsn = os.getenv("DATABASE_URL") or _build_dsn_from_pg_env()
+    if not dsn:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL not configured. Set a full Postgres URI."
+        )
+    dsn = _normalize_dsn(dsn)
+
+    try:
+        return psycopg2.connect(dsn)  # sslmode handled in DSN
+    except psycopg2.OperationalError as e:
+        # Common causes: wrong host, no internet/DNS, wrong password, missing sslmode
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database connection failed: {str(e)}"
+        )
+
 app = FastAPI()
 
 # --- FIX STARTS HERE ---
@@ -36,8 +77,9 @@ origins = [
     "http://localhost",
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://127.0.0.1:5173",  # added
     "http://127.0.0.1:5500",
-    "https://your-frontend-name.onrender.com",
+    # "https://your-frontend-name.onrender.com",
 ]
 
 app.add_middleware(
@@ -50,20 +92,9 @@ app.add_middleware(
 
 # --- FIX ENDS HERE ---
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
 # Load the trained model when the application starts
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'ml_model', 'stock_predictor.joblib')
 model = joblib.load(MODEL_PATH)
-
-def get_db_connection():
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL environment variable not set.")
-    try:
-        return psycopg2.connect(DATABASE_URL)
-    except psycopg2.OperationalError as e:
-        print(f"FATAL: Could not connect to the database: {e}")
-        raise
 
 def query_stock_data(symbol: str):
     """Queries the database for a symbol and returns formatted data."""
@@ -270,5 +301,15 @@ def predict_stock_price(request: PredictionRequest, current_user: str = Depends(
         return {"symbol": request.symbol, "predicted_next_day_close": float(prediction)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+
+@app.get("/health/db")
+def health_db():
+    """Quick DB connectivity check."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1")
+    cur.fetchone()
+    cur.close(); conn.close()
+    return {"ok": True}
 
 

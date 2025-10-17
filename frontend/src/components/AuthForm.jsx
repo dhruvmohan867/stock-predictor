@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Loader, Eye, EyeOff } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = "https://stock-predictor-ujiu.onrender.com";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 const AuthForm = ({ onLogin }) => {

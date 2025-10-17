@@ -89,29 +89,22 @@ stock-predi/
    pip install -r backend/requirements.txt
    ```
 
-4. **Configure environment variables**
-   Create `.env` in the project root:
-   ```env
-   DATABASE_URL=postgresql://user:pass@host:5432/dbname?sslmode=require
-   ALPHA_VANTAGE_API_KEY=your_api_key
-   SECRET_KEY=your_secret_key_here
-   GOOGLE_CLIENT_ID=your_google_client_id
-   ```
 
-5. **Set up database**
+
+4. **Set up database**
    Run the SQL schema in `data_pipeline/db_setup.sql` on your PostgreSQL instance.
 
-6. **Fetch initial stock data**
+5. **Fetch initial stock data**
    ```bash
    python data_pipeline/fetch_data.py
    ```
 
-7. **Train the ML model**
+6. **Train the ML model**
    ```bash
    python ml_model/train.py
    ```
 
-8. **Start the API server**
+7. **Start the API server**
    ```bash
    uvicorn backend.main:app --reload
    ```

@@ -228,10 +228,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📧 Contact
 
-Your Name - [@yourtwitter](https://twitter.com/yourtwitter) - your.email@example.com
+Dhruv Mohan Shukla  - [@linkedin](https://www.linkedin.com/in/dhruvmohanshukla/) - 
+dhruvmohanshukla@gmail.com
 
-Project Link: [https://github.com/yourusername/stock-predi](https://github.com/yourusername/stock-predi)
+
 
 ---
 
-Made with ❤️ by [Your Name]
+Made with ❤️ by Dhruv Mohan Shukla

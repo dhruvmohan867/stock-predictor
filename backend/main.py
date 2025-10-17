@@ -12,6 +12,7 @@ from datetime import timedelta
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 import secrets
+import auth  # Simple import from same directory
 
 # --- This block is new ---
 # Add the parent directory of 'data-pipeline' to the Python path
@@ -21,10 +22,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 # --- End of new block ---
-
-# --- MODIFICATION START ---
-from .auth import get_password_hash, verify_password, create_access_token, get_current_user
-# --- MODIFICATION END ---
 
 load_dotenv()
 
@@ -133,13 +130,12 @@ def register_user(
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # Check uniqueness
     cur.execute("SELECT 1 FROM users WHERE username = %s OR email = %s", (username, email))
     if cur.fetchone():
         cur.close(); conn.close()
         raise HTTPException(status_code=400, detail="Username or email already registered")
 
-    hashed_password = get_password_hash(password)
+    hashed_password = auth.get_password_hash(password)  # Use auth.
     cur.execute(
         "INSERT INTO users (username, email, hashed_password) VALUES (%s, %s, %s)",
         (username, email, hashed_password)
@@ -179,14 +175,12 @@ def google_login(payload: GoogleLoginRequest):
     if row:
         username = row[0]
     else:
-        # Ensure unique username
         username = username_base
         cur.execute("SELECT 1 FROM users WHERE username = %s", (username,))
         if cur.fetchone():
             username = f"{username_base}_{sub[:6]}"
 
-        # Store random password hash (not used by Google users)
-        random_pwd_hash = get_password_hash(secrets.token_urlsafe(16))
+        random_pwd_hash = auth.get_password_hash(secrets.token_urlsafe(16))  # Use auth.
         cur.execute(
             "INSERT INTO users (username, email, hashed_password, google_id) VALUES (%s, %s, %s, %s) RETURNING username",
             (username, email, random_pwd_hash, sub)
@@ -196,7 +190,7 @@ def google_login(payload: GoogleLoginRequest):
 
     cur.close(); conn.close()
 
-    access_token = create_access_token(
+    access_token = auth.create_access_token(  # Use auth.
         data={"sub": username},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -213,7 +207,7 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     cur.close()
     conn.close()
     
-    if not user or not verify_password(form_data.password, user[1]):
+    if not user or not auth.verify_password(form_data.password, user[1]):  # Use auth.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -221,14 +215,14 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
         )
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
+    access_token = auth.create_access_token(  # Use auth.
         data={"sub": user[0]}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
 # --- PROTECT THE ENDPOINT ---
 @app.get("/api/stocks/{symbol}")
-def get_stock_prices(symbol: str, current_user: str = Depends(get_current_user)):
+def get_stock_prices(symbol: str, current_user: str = Depends(auth.get_current_user)):  # Use auth.
     """
     Fetches historical price data for a stock.
     This endpoint is now protected and requires a valid token.
@@ -265,7 +259,7 @@ class PredictionRequest(BaseModel):
 
 # 2. Replace the entire old /api/predict endpoint with this new, secure version.
 @app.post("/api/predict")
-def predict_stock_price(request: PredictionRequest, current_user: str = Depends(get_current_user)):
+def predict_stock_price(request: PredictionRequest, current_user: str = Depends(auth.get_current_user)):  # Use auth.
     """
     Predicts the next day's closing price for a given stock symbol
     using the last 60 days of data. This endpoint is now protected.

@@ -63,15 +63,15 @@ stock-predi/
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- PostgreSQL (or Supabase account)
+- PostgreSQL / Supabase 
 - Alpha Vantage API key (free at [alphavantage.co](https://www.alphavantage.co))
-- Google OAuth client ID (optional, for Google sign-in)
+
 
 ### Backend Setup
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/stock-predi.git
+   git clone https://github.com/dhruvmohan867/stock-predictor.git
    cd stock-predi
    ```
 

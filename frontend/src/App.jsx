@@ -36,7 +36,7 @@ function App() {
         // --- IMAGE SLOT ---
         // 1. Add an image (e.g., `auth-bg.jpg`) to your `frontend/public` folder.
         // 2. The line below will then display it automatically.
-        style={{ backgroundImage: "url(https://miro.medium.com/v2/resize:fit:786/format:webp/1*xBuJWs9kO51tyvhrhc9JYA.jpeg)" }}
+        style={{ backgroundImage: "url(https://cdn.prod.website-files.com/6567ab1461039867a87486d8/66a9973471f9bf6d4e0caf4f_65b9cf9f84649ea6eb40f342_ai-stock-prediction.png)" }}
       >
         {/* This div is purely for the background image */}
       </div>

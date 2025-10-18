@@ -115,7 +115,7 @@ def query_stock_data(symbol: str):
 def read_root():
     return {"message": "Stock Prediction API is running."}
 
-@app.post("/register")
+@app.post("/register")  # ← Only accepts POST
 def register_user(
     username: str = Form(...),
     password: str = Form(...),

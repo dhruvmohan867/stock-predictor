@@ -77,17 +77,17 @@ origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5500",
-    "https://stock-predictor-five-opal.vercel.app",  # ✅ NO trailing slash
+    "https://stock-predictor-five-opal.vercel.app",  # ✅ Your Vercel frontend
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # ✅ Explicitly allow methods
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"],  # ✅ Add this
-    max_age=3600,  # ✅ Cache preflight for 1 hour
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # Add this right after creating the app instance

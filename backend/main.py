@@ -2,7 +2,7 @@ import os
 import sys
 import psycopg
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends, status, Form
+from fastapi import FastAPI, HTTPException, Depends, status, Form, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -21,16 +21,21 @@ from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 
 load_dotenv()
 
+# -------------------------------------------------------------------
+# DATABASE CONNECTION HELPERS
+# -------------------------------------------------------------------
+
 def _build_dsn_from_pg_env():
     """Optionally build DSN from PG* env vars if DATABASE_URL is not set."""
     host = os.getenv("PGHOST")
-    db   = os.getenv("PGDATABASE")
+    db = os.getenv("PGDATABASE")
     user = os.getenv("PGUSER")
-    pwd  = os.getenv("PGPASSWORD")
+    pwd = os.getenv("PGPASSWORD")
     port = os.getenv("PGPORT", "5432")
     if all([host, db, user, pwd]):
         return f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
     return None
+
 
 def _normalize_dsn(dsn: str) -> str:
     """Ensure sslmode=require for Supabase and return normalized DSN."""
@@ -38,6 +43,7 @@ def _normalize_dsn(dsn: str) -> str:
         sep = "&" if "?" in dsn else "?"
         dsn = f"{dsn}{sep}sslmode=require"
     return dsn
+
 
 def get_db_connection():
     """Return a psycopg connection or raise HTTPException with a precise reason."""
@@ -48,7 +54,6 @@ def get_db_connection():
             detail="DATABASE_URL not configured. Set a full Postgres URI."
         )
     dsn = _normalize_dsn(dsn)
-
     try:
         return psycopg.connect(dsn)
     except psycopg.OperationalError as e:
@@ -57,16 +62,18 @@ def get_db_connection():
             detail=f"Database connection failed: {str(e)}"
         )
 
-# Create FastAPI app
+# -------------------------------------------------------------------
+# FASTAPI APP SETUP
+# -------------------------------------------------------------------
+
 app = FastAPI()
 
-# ✅ FIXED CORS CONFIGURATION - Remove all duplicate CORS code
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://stock-predictor-five-opal.vercel.app",  # Your production frontend
+        "https://stock-predictor-five-opal.vercel.app",  # production frontend
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -74,7 +81,10 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Load the trained model when the application starts
+# -------------------------------------------------------------------
+# LOAD MODEL
+# -------------------------------------------------------------------
+
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'ml_model', 'stock_predictor.joblib')
 
 try:
@@ -82,11 +92,29 @@ try:
     print(f"✓ ML model loaded successfully from {MODEL_PATH}")
 except FileNotFoundError:
     print(f"⚠️ Warning: Model file not found at {MODEL_PATH}")
-    print("Predictions will not work until you train and save the model.")
     model = None
 except Exception as e:
     print(f"⚠️ Error loading model: {e}")
     model = None
+
+# -------------------------------------------------------------------
+# SCHEMAS
+# -------------------------------------------------------------------
+
+class UserRegister(BaseModel):
+    username: str
+    password: str
+    email: str
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
+
+class PredictionRequest(BaseModel):
+    symbol: str
+
+# -------------------------------------------------------------------
+# HELPER: QUERY STOCK DATA
+# -------------------------------------------------------------------
 
 def query_stock_data(symbol: str):
     """Queries the database for a symbol and returns formatted data."""
@@ -101,27 +129,58 @@ def query_stock_data(symbol: str):
             return None
 
         stock_id = stock_record[0]
-        cur.execute("SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = %s ORDER BY date DESC", (stock_id,))
+        cur.execute(
+            "SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = %s ORDER BY date DESC",
+            (stock_id,),
+        )
         prices = cur.fetchall()
         cur.close()
 
-        price_data = [{"date": r[0].isoformat(), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": int(r[5])} for r in prices]
+        price_data = [
+            {
+                "date": r[0].isoformat(),
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "volume": int(r[5]),
+            }
+            for r in prices
+        ]
         return {"symbol": symbol.upper(), "prices": price_data}
     finally:
         if conn:
             conn.close()
 
+# -------------------------------------------------------------------
+# ROUTES
+# -------------------------------------------------------------------
+
 @app.get("/")
 def read_root():
     return {"message": "Stock Prediction API is running."}
 
-@app.post("/register")  # ← Only accepts POST
-def register_user(
-    username: str = Form(...),
-    password: str = Form(...),
-    email: str = Form(...)
+
+@app.post("/register")
+async def register_user(
+    username: str = Form(None),
+    password: str = Form(None),
+    email: str = Form(None),
+    user_json: UserRegister = Body(None),
 ):
-    """User registration with email."""
+    """
+    Register new user.
+    Accepts both form-data (for Postman) and JSON (for frontend).
+    """
+    # Prefer JSON if available
+    if user_json:
+        username = user_json.username
+        password = user_json.password
+        email = user_json.email
+
+    if not username or not password or not email:
+        raise HTTPException(status_code=400, detail="All fields (username, password, email) are required.")
+
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -137,10 +196,35 @@ def register_user(
     )
     conn.commit()
     cur.close(); conn.close()
+
     return {"message": f"User '{username}' registered successfully"}
 
-class GoogleLoginRequest(BaseModel):
-    credential: str
+
+@app.post("/token")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Handles user login and returns a JWT."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT username, hashed_password FROM users WHERE username = %s", (form_data.username,))
+    user = cur.fetchone()
+    cur.close(); conn.close()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not auth.verify_password(form_data.password, user[1]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": user[0]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
 
 @app.post("/google-login")
 def google_login(payload: GoogleLoginRequest):
@@ -150,9 +234,7 @@ def google_login(payload: GoogleLoginRequest):
 
     try:
         idinfo = google_id_token.verify_oauth2_token(
-            payload.credential,
-            google_requests.Request(),
-            CLIENT_ID
+            payload.credential, google_requests.Request(), CLIENT_ID
         )
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid Google token")
@@ -190,97 +272,53 @@ def google_login(payload: GoogleLoginRequest):
     )
     return {"access_token": access_token, "token_type": "bearer", "username": username}
 
-@app.post("/token")
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    """Handles user login and returns a JWT."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    
-    cur.execute("SELECT username, hashed_password FROM users WHERE username = %s", (form_data.username,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
-    
-    if not user or not auth.verify_password(form_data.password, user[1]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-        
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = auth.create_access_token(
-        data={"sub": user[0]}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/api/stocks/{symbol}")
 def get_stock_prices(symbol: str, current_user: str = Depends(auth.get_current_user)):
-    """Fetches historical price data for a stock."""
-    print(f"Request for {symbol} by authenticated user: {current_user}")
-    
     data = query_stock_data(symbol)
-    
     if data:
-        print(f"Found {symbol} in database. Returning cached data.")
         return data
-        
-    print(f"'{symbol}' not in DB. Fetching from Alpha Vantage...")
+
     new_stock_data = fetch_stock_data(symbol)
-    
     if not new_stock_data:
-        raise HTTPException(status_code=404, detail=f"Could not retrieve data for '{symbol}' from external API.")
-        
+        raise HTTPException(status_code=404, detail=f"No data found for '{symbol}'.")
+
     store_stock_data(symbol, new_stock_data)
-    
-    print(f"Successfully stored {symbol}. Now returning data from DB.")
     return query_stock_data(symbol)
 
-class PredictionRequest(BaseModel):
-    symbol: str
 
 @app.post("/api/predict")
 def predict_stock_price(request: PredictionRequest, current_user: str = Depends(auth.get_current_user)):
-    """Predicts the next day's closing price for a given stock symbol."""
+    if not request.symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+
     if model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ML model not loaded. Please contact the administrator."
-        )
-    
-    print(f"Prediction request for {request.symbol} by user {current_user}")
-    
+        raise HTTPException(status_code=503, detail="ML model not loaded on server")
+
     data = query_stock_data(request.symbol)
     if not data or not data["prices"]:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Not enough historical data to predict for {request.symbol}."
-        )
-
-    latest_features = data["prices"][0]
+        raise HTTPException(status_code=404, detail=f"Not enough historical data for {request.symbol}")
 
     try:
+        latest = data["prices"][0]
         input_data = pd.DataFrame([{
-            "open": latest_features["open"],
-            "high": latest_features["high"],
-            "low": latest_features["low"],
-            "close": latest_features["close"],
-            "volume": latest_features["volume"]
+            "open": latest["open"],
+            "high": latest["high"],
+            "low": latest["low"],
+            "close": latest["close"],
+            "volume": latest["volume"],
         }])
-        
         prediction = model.predict(input_data)[0]
         return {"symbol": request.symbol, "predicted_next_day_close": float(prediction)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
 
+
 @app.get("/health/db")
 def health_db():
-    """Quick DB connectivity check."""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT 1")
     cur.fetchone()
     cur.close(); conn.close()
     return {"ok": True}
-
-

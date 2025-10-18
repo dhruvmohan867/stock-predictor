@@ -70,7 +70,10 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://stock-predictor-five-opal.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -157,42 +160,27 @@ def read_root():
 
 
 @app.post("/register")
-async def register_user(
-    username: str = Form(None),
-    password: str = Form(None),
-    email: str = Form(None),
-    user_json: UserRegister = Body(None),
-):
+def register_user(user: UserRegister):
     """
-    Register new user.
-    Accepts both form-data (for Postman) and JSON (for frontend).
+    Register new user. Accepts a JSON body.
     """
-    # Prefer JSON if available
-    if user_json:
-        username = user_json.username
-        password = user_json.password
-        email = user_json.email
-
-    if not username or not password or not email:
-        raise HTTPException(status_code=400, detail="All fields (username, password, email) are required.")
-
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT 1 FROM users WHERE username = %s OR email = %s", (username, email))
+    cur.execute("SELECT 1 FROM users WHERE username = %s OR email = %s", (user.username, user.email))
     if cur.fetchone():
         cur.close(); conn.close()
         raise HTTPException(status_code=400, detail="Username or email already registered")
 
-    hashed_password = auth.get_password_hash(password)
+    hashed_password = auth.get_password_hash(user.password)
     cur.execute(
         "INSERT INTO users (username, email, hashed_password) VALUES (%s, %s, %s)",
-        (username, email, hashed_password)
+        (user.username, user.email, hashed_password)
     )
     conn.commit()
     cur.close(); conn.close()
 
-    return {"message": f"User '{username}' registered successfully"}
+    return {"message": f"User '{user.username}' registered successfully"}
 
 
 @app.post("/token")

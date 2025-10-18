@@ -53,47 +53,54 @@ const AuthForm = ({ onLogin }) => {
     setError('');
     setLoading(true);
 
-    const endpoint = isLogin ? '/token' : '/register';
-
     try {
-      // ✅ Use FormData instead of URLSearchParams
-      const formData = new FormData();
-      formData.append('username', username);
-      formData.append('password', password);
-      if (!isLogin) {
-        formData.append('email', email);
-      }
-
-      const response = await fetch(`${API_BASE}${endpoint}`, {
-        method: 'POST',
-        body: formData, // ✅ let browser set correct Content-Type
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(errorData.detail || `HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-
       if (isLogin) {
+        // For LOGIN, we MUST use FormData for OAuth2PasswordRequestForm
+        const formData = new FormData();
+        formData.append('username', username);
+        formData.append('password', password);
+
+        const response = await fetch(`${API_BASE}/token`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: 'Login failed' }));
+          throw new Error(errorData.detail);
+        }
+        
+        const data = await response.json();
         localStorage.setItem('token', data.access_token);
         localStorage.setItem('username', username);
         onLogin();
+
       } else {
-        // ✅ Auto-login after registration
-        const loginData = new FormData();
-        loginData.append('username', username);
-        loginData.append('password', password);
+        // For REGISTER, we now send JSON
+        const response = await fetch(`${API_BASE}/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, email, password }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: 'Registration failed' }));
+          throw new Error(errorData.detail);
+        }
+
+        // Auto-login after successful registration
+        const loginForm = new FormData();
+        loginForm.append('username', username);
+        loginForm.append('password', password);
 
         const loginResponse = await fetch(`${API_BASE}/token`, {
           method: 'POST',
-          body: loginData,
+          body: loginForm,
         });
 
         if (loginResponse.ok) {
-          const loginJson = await loginResponse.json();
-          localStorage.setItem('token', loginJson.access_token);
+          const loginData = await loginResponse.json();
+          localStorage.setItem('token', loginData.access_token);
           localStorage.setItem('username', username);
           onLogin();
         } else {

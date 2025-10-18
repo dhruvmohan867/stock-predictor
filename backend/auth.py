@@ -1,7 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -12,21 +11,27 @@ SECRET_KEY = os.getenv("SECRET_KEY", "a_very_secret_key_that_should_be_in_env")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-print("bcrypt version:", bcrypt.__version__)
-
 # OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# --- MODIFICATION START: Use bcrypt directly ---
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies a plain password against a hashed one."""
-    return pwd_context.verify(plain_password[:72], hashed_password)
+    """Verifies a plain password against a hashed one using bcrypt."""
+    # bcrypt requires bytes, so we encode the strings
+    password_bytes = plain_password.encode('utf-8')
+    hashed_password_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(password_bytes, hashed_password_bytes)
 
 def get_password_hash(password: str) -> str:
-    """Hashes a plain password."""
-    return pwd_context.hash(password[:72])
+    """Hashes a plain password using bcrypt."""
+    password_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_bytes = bcrypt.hashpw(password_bytes, salt)
+    # Return the hash as a string to store in the database
+    return hashed_bytes.decode('utf-8')
+
+# --- MODIFICATION END ---
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Generates a JWT access token."""

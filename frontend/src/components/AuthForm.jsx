@@ -52,31 +52,62 @@ const AuthForm = ({ onLogin }) => {
     setError('');
     setLoading(true);
 
-    try {
-      const formData = isLogin
-        ? new URLSearchParams({ username, password })
-        : new URLSearchParams({ username, password, email }); // <-- include email on signup
+    const endpoint = isLogin ? '/token' : '/register';
 
-      const endpoint = isLogin ? '/token' : '/register';
+    try {
+      const formData = new URLSearchParams();
+      formData.append('username', username);
+      formData.append('password', password);
+      if (!isLogin) {
+        formData.append('email', email);
+      }
+
+      console.log('Sending request to:', `${API_BASE}${endpoint}`);  // ✅ Debug log
+      console.log('Form data:', Object.fromEntries(formData));  // ✅ Debug log
+
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: formData,
+        headers: { 
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData.toString(),
       });
+
+      console.log('Response status:', response.status);  // ✅ Debug log
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));  // ✅ Debug log
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(errorData.detail || `HTTP ${response.status}`);
+      }
+
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Request failed');
 
       if (isLogin) {
         localStorage.setItem('token', data.access_token);
         localStorage.setItem('username', username);
         onLogin();
       } else {
-        setIsLogin(true);
-        setError('Registration successful! Please sign in.');
-        setPassword('');
+        // After successful registration, auto-login
+        const loginResponse = await fetch(`${API_BASE}/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ username, password }).toString(),
+        });
+
+        if (loginResponse.ok) {
+          const loginData = await loginResponse.json();
+          localStorage.setItem('token', loginData.access_token);
+          localStorage.setItem('username', username);
+          onLogin();
+        } else {
+          setError('Account created! Please sign in.');
+          setIsLogin(true);
+        }
       }
     } catch (err) {
-      setError(err.message);
+      console.error('Fetch error:', err);  // ✅ Debug log
+      setError(err.message || 'Failed to fetch');
     } finally {
       setLoading(false);
     }

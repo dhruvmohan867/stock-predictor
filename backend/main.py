@@ -2,9 +2,10 @@ import os
 import sys
 import psycopg  # instead of psycopg2
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends , status, Form
+from fastapi import FastAPI, HTTPException, Depends, status, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse  # ✅ Add this import
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
@@ -74,18 +75,33 @@ origins = [
     "http://localhost",
     "http://localhost:3000",
     "http://localhost:5173",
-    "http://127.0.0.1:5173",  # added
+    "http://127.0.0.1:5173",
     "http://127.0.0.1:5500",
-     "https://stock-predictor-five-opal.vercel.app",
+    "https://stock-predictor-five-opal.vercel.app",  # ✅ NO trailing slash
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"], # Allows all headers
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # ✅ Explicitly allow methods
+    allow_headers=["*"],
+    expose_headers=["*"],  # ✅ Add this
+    max_age=3600,  # ✅ Cache preflight for 1 hour
 )
+
+# Add this right after creating the app instance
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    """Handle CORS preflight requests"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 # --- FIX ENDS HERE ---
 

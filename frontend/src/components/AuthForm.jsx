@@ -8,13 +8,13 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 const AuthForm = ({ onLogin }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');           // <-- new
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Google callback
+  // --- Google callback handler ---
   const handleGoogleCredential = async (response) => {
     try {
       const res = await fetch(`${API_BASE}/google-login`, {
@@ -33,7 +33,7 @@ const AuthForm = ({ onLogin }) => {
     }
   };
 
-  // Render Google button
+  // --- Render Google button ---
   useEffect(() => {
     if (window.google && GOOGLE_CLIENT_ID) {
       window.google.accounts.id.initialize({
@@ -42,11 +42,12 @@ const AuthForm = ({ onLogin }) => {
       });
       window.google.accounts.id.renderButton(
         document.getElementById('googleSignInDiv'),
-        { theme: 'filled_blue', size: 'large', shape: 'rectangular', width: '100%' }
+        { theme: 'filled_blue', size: 'large', shape: 'rectangular', width: 250 }
       );
     }
   }, []);
 
+  // --- Handle login / register form submit ---
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -55,26 +56,18 @@ const AuthForm = ({ onLogin }) => {
     const endpoint = isLogin ? '/token' : '/register';
 
     try {
-      const formData = new URLSearchParams();
+      // ✅ Use FormData instead of URLSearchParams
+      const formData = new FormData();
       formData.append('username', username);
       formData.append('password', password);
       if (!isLogin) {
         formData.append('email', email);
       }
 
-      console.log('Sending request to:', `${API_BASE}${endpoint}`);  // ✅ Debug log
-      console.log('Form data:', Object.fromEntries(formData));  // ✅ Debug log
-
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: formData.toString(),
+        body: formData, // ✅ let browser set correct Content-Type
       });
-
-      console.log('Response status:', response.status);  // ✅ Debug log
-      console.log('Response headers:', Object.fromEntries(response.headers.entries()));  // ✅ Debug log
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
@@ -88,16 +81,19 @@ const AuthForm = ({ onLogin }) => {
         localStorage.setItem('username', username);
         onLogin();
       } else {
-        // After successful registration, auto-login
+        // ✅ Auto-login after registration
+        const loginData = new FormData();
+        loginData.append('username', username);
+        loginData.append('password', password);
+
         const loginResponse = await fetch(`${API_BASE}/token`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ username, password }).toString(),
+          body: loginData,
         });
 
         if (loginResponse.ok) {
-          const loginData = await loginResponse.json();
-          localStorage.setItem('token', loginData.access_token);
+          const loginJson = await loginResponse.json();
+          localStorage.setItem('token', loginJson.access_token);
           localStorage.setItem('username', username);
           onLogin();
         } else {
@@ -106,7 +102,7 @@ const AuthForm = ({ onLogin }) => {
         }
       }
     } catch (err) {
-      console.error('Fetch error:', err);  // ✅ Debug log
+      console.error('Fetch error:', err);
       setError(err.message || 'Failed to fetch');
     } finally {
       setLoading(false);
@@ -138,20 +134,20 @@ const AuthForm = ({ onLogin }) => {
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="w-full mt-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+            className="w-full mt-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
             placeholder="Enter your username"
             required
           />
         </div>
 
-        {!isLogin && (                                    // <-- email only on Sign Up
+        {!isLogin && (
           <div>
             <label className="text-xs font-medium text-gray-400">Email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full mt-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+              className="w-full mt-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
               placeholder="your@email.com"
               required
             />
@@ -165,7 +161,7 @@ const AuthForm = ({ onLogin }) => {
               type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
               placeholder="Enter your password"
               required
             />
@@ -180,40 +176,19 @@ const AuthForm = ({ onLogin }) => {
         </div>
 
         {error && (
-          <p
-            className={`text-sm ${
-              error.includes('successful')
-                ? 'text-green-400'
-                : 'text-red-400'
-            }`}
-          >
+          <p className={`text-sm ${error.includes('successful') ? 'text-green-400' : 'text-red-400'}`}>
             {error}
           </p>
         )}
-
-        <div className="text-right">
-          <a
-            href="#"
-            className="text-xs font-medium text-gray-400 hover:text-blue-400 transition"
-          >
-            Forgot Password?
-          </a>
-        </div>
 
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           type="submit"
           disabled={loading}
-          className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold hover:bg-blue-600 transition disabled:opacity-50"
         >
-          {loading ? (
-            <Loader className="animate-spin mx-auto" />
-          ) : isLogin ? (
-            'Sign In'
-          ) : (
-            'Create Account'
-          )}
+          {loading ? <Loader className="animate-spin mx-auto" /> : isLogin ? 'Sign In' : 'Create Account'}
         </motion.button>
       </form>
 
@@ -223,9 +198,7 @@ const AuthForm = ({ onLogin }) => {
 
       <div className="text-center mt-8 text-sm">
         <p>
-          {isLogin
-            ? "Don't have an account?"
-            : 'Already have an account?'}
+          {isLogin ? "Don't have an account?" : 'Already have an account?'}
           <button
             onClick={() => {
               setIsLogin(!isLogin);

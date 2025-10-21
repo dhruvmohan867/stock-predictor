@@ -160,7 +160,7 @@ const Dashboard = ({ onLogout }) => {
           </div>
         </div>
       </header>
-
+    
       <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8 grid grid-cols-1 lg:grid-cols-4 gap-8">
         {/* --- Left Sidebar --- */}
         <aside className="lg:col-span-1 space-y-6">
@@ -179,7 +179,8 @@ const Dashboard = ({ onLogout }) => {
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><Star size={20} className="text-yellow-400" /> Market Movers</h2>
             <div className="flex flex-wrap gap-2">
               {WATCHLIST_SYMBOLS.map(s => (
-                <button key={s} onClick={() => executeSearch(s)} className={`px-3 py-1 text-sm font-medium rounded-full transition ${activeSymbol === s ? 'bg-indigo-600 text-white' : 'bg-gray-700/50 hover:bg-gray-600'}`}>
+                <button key={s} onClick={() => executeSearch(s)} className={`flex items-center gap-2 px-3 py-1 text-sm font-medium rounded-full transition ${activeSymbol === s ? 'bg-indigo-600 text-white' : 'bg-gray-700/50 hover:bg-gray-600'}`}>
+                  <StockLogo symbol={s} className="w-4 h-4 rounded-full" />
                   {s}
                 </button>
               ))}
@@ -188,17 +189,17 @@ const Dashboard = ({ onLogout }) => {
         </aside>
 
         {/* --- Main Content --- */}
-        <main className="lg:col-span-3">
+        <main className="lg:col-span-3 relative">
           <AnimatePresence>
             {loading && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-gray-900/50 flex items-center justify-center z-10">
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-gray-900/50 flex items-center justify-center z-10 rounded-xl">
                 <Loader className="animate-spin text-indigo-500" size={48} />
               </motion.div>
             )}
           </AnimatePresence>
           
           <AnimatePresence>
-            {error && (
+            {error && !loading && (
               <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="bg-red-900/50 border border-red-700 text-red-300 px-4 py-3 rounded-lg mb-6 flex items-center gap-2">
                 <AlertCircle size={20} /> <span>{error}</span>
               </motion.div>
@@ -207,8 +208,8 @@ const Dashboard = ({ onLogout }) => {
 
           {stockData ? (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-              <div className="flex items-baseline gap-4">
-                <Building size={32} className="text-gray-500" />
+              <div className="flex items-center gap-4">
+                <StockLogo symbol={stockData.symbol} className="w-10 h-10 rounded-full bg-gray-700" />
                 <h1 className="text-4xl font-bold">{stockData.symbol}</h1>
               </div>
 
@@ -235,3 +236,51 @@ const Dashboard = ({ onLogout }) => {
 
               {!prediction && (
                 <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
+                  <button 
+                    onClick={handlePredict} 
+                    disabled={loading}
+                    className="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    <Activity size={20} /> Predict Next Day
+                  </button>
+                </motion.div>
+              )}
+
+              <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6 h-96">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                    <defs>
+                      <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#667EEA" stopOpacity={0.8}/>
+                        <stop offset="95%" stopColor="#667EEA" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#4A5568" />
+                    <XAxis dataKey="date" stroke="#A0AEC0" fontSize={12} />
+                    <YAxis stroke="#A0AEC0" fontSize={12} domain={['dataMin - 5', 'dataMax + 5']} />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1A202C', border: '1px solid #4A5568', color: '#E2E8F0' }}
+                      itemStyle={{ color: '#E2E8F0' }}
+                      labelStyle={{ color: '#A0AEC0' }}
+                    />
+                    <Area type="monotone" dataKey="price" stroke="#818CF8" fillOpacity={1} fill="url(#colorPrice)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </motion.div>
+          ) : (
+            !loading && (
+              <div className="flex flex-col items-center justify-center h-full text-center text-gray-500">
+                <BarChart3 size={48} className="mb-4" />
+                <h2 className="text-xl font-semibold">No Data Available</h2>
+                <p>Could not load data for the selected stock. Please try another symbol.</p>
+              </div>
+            )
+          )}
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default Dashboard;

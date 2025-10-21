@@ -8,74 +8,6 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.
 // A list of popular stocks for the watchlist feature
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"];
 
-// --- NEW: Upgraded Logo Component ---
-// This component now tries multiple sources to find a logo, making it far more reliable.
-const StockLogo = ({ symbol, className }) => {
-  const [logoUrl, setLogoUrl] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const findLogo = async () => {
-      setLoading(true);
-      setLogoUrl(null);
-
-      if (!symbol) {
-        setLoading(false);
-        return;
-      }
-
-      // --- STRATEGY 1: Try the direct symbol-based logo provider (fastest) ---
-      const primaryUrl = `https://eodhistoricaldata.com/img/logos/US/${symbol.toUpperCase()}.png`;
-      
-      // --- STRATEGY 2: Use a lookup service to get company info, then use Clearbit ---
-      // This is our powerful fallback.
-      try {
-        // This free API gives us the company's website domain from its stock symbol.
-        const response = await fetch(`https://company.bigpicture.io/v1/companies/find?companyName=${symbol}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data && data.length > 0 && data[0].domain) {
-            // Now use the domain with the Clearbit logo API.
-            const clearbitUrl = `https://logo.clearbit.com/${data[0].domain}`;
-            setLogoUrl(clearbitUrl);
-            setLoading(false);
-            return; // Found a logo, we're done.
-          }
-        }
-      } catch (error) {
-        console.warn(`Could not find domain for ${symbol}, falling back.`);
-      }
-
-      // If the second strategy fails, fall back to the first one.
-      setLogoUrl(primaryUrl);
-      setLoading(false);
-    };
-
-    findLogo();
-  }, [symbol]);
-
-  const handleError = () => {
-    // This is the final fallback if all strategies fail.
-    setLogoUrl(null);
-    setLoading(false);
-  };
-
-  if (loading) {
-    return <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`} />;
-  }
-
-  if (!logoUrl) {
-    return (
-      <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`}>
-        <Building size="60%" />
-      </div>
-    );
-  }
-
-  return <img src={logoUrl} alt={`${symbol} logo`} className={className} onError={handleError} />;
-};
-
-
 const Dashboard = ({ onLogout }) => {
   const [symbol, setSymbol] = useState('');
   const [activeSymbol, setActiveSymbol] = useState('');
@@ -179,13 +111,7 @@ const Dashboard = ({ onLogout }) => {
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><Star size={20} className="text-yellow-400" /> Market Movers</h2>
             <div className="flex flex-wrap gap-2">
               {WATCHLIST_SYMBOLS.map(s => (
-                <button 
-                  key={s} 
-                  onClick={() => executeSearch(s)} 
-                  className={`flex items-center gap-2 px-3 py-1 text-sm font-medium rounded-full transition ${activeSymbol === s ? 'bg-indigo-600 text-white' : 'bg-gray-700/50 hover:bg-gray-600'}`}
-                >
-                  {/* --- MODIFICATION: Added StockLogo to watchlist buttons --- */}
-                  <StockLogo symbol={s} className="w-4 h-4 rounded-full" />
+                <button key={s} onClick={() => executeSearch(s)} className={`px-3 py-1 text-sm font-medium rounded-full transition ${activeSymbol === s ? 'bg-indigo-600 text-white' : 'bg-gray-700/50 hover:bg-gray-600'}`}>
                   {s}
                 </button>
               ))}
@@ -213,9 +139,8 @@ const Dashboard = ({ onLogout }) => {
 
           {stockData ? (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-              <div className="flex items-center gap-4">
-                {/* --- MODIFICATION: Added StockLogo component --- */}
-                <StockLogo symbol={stockData.symbol} className="w-10 h-10 rounded-full bg-gray-700" />
+              <div className="flex items-baseline gap-4">
+                <Building size={32} className="text-gray-500" />
                 <h1 className="text-4xl font-bold">{stockData.symbol}</h1>
               </div>
 

@@ -1,6 +1,6 @@
 import os
 import sys
-import psycopg2
+import psycopg  
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -18,7 +18,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def train_and_save_model():
     """Fetches all data, trains a simple model, and saves it."""
     print("Connecting to database to fetch training data...")
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL)  # <-- CHANGE: Use psycopg connect
     
     # Fetch all price data from the database
     df = pd.read_sql("SELECT date, open, high, low, close, volume FROM stock_prices ORDER BY date", conn)

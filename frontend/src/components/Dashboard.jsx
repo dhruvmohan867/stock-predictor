@@ -235,36 +235,3 @@ const Dashboard = ({ onLogout }) => {
 
               {!prediction && (
                 <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
-                  <button onClick={handlePredict} disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-4 rounded-xl font-semibold text-lg hover:shadow-2xl hover:shadow-purple-600/30 transition-all shadow-lg disabled:opacity-50 flex items-center justify-center gap-3">
-                    {loading ? <><Loader className="animate-spin" /> Analyzing...</> : '🔮 Predict Tomorrow\'s Price'}
-                  </button>
-                </motion.div>
-              )}
-
-              <div className="bg-gray-800/50 border border-gray-700 rounded-xl shadow-lg p-6">
-                <h2 className="text-xl font-bold mb-4">30-Day Price History</h2>
-                <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData}>
-                    <defs><linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#818cf8" stopOpacity={0.4}/><stop offset="95%" stopColor="#818cf8" stopOpacity={0}/></linearGradient></defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                    <XAxis dataKey="date" stroke="#9ca3af" style={{ fontSize: '12px' }} />
-                    <YAxis stroke="#9ca3af" style={{ fontSize: '12px' }} domain={['dataMin - 5', 'dataMax + 5']} />
-                    <Tooltip contentStyle={{ backgroundColor: 'rgba(31, 41, 55, 0.8)', border: '1px solid #4b5563', borderRadius: '8px', color: '#e5e7eb' }} />
-                    <Area type="monotone" dataKey="price" stroke="#818cf8" strokeWidth={2} fill="url(#colorPrice)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </motion.div>
-          ) : !loading && (
-            <div className="text-center py-20 text-gray-500">
-              <h3 className="text-xl font-semibold text-gray-200 mb-2">No Data Available</h3>
-              <p>Could not load data for the selected stock. Please try another symbol.</p>
-            </div>
-          )}
-        </main>
-      </div>
-    </div>
-  );
-};
-
-export default Dashboard;

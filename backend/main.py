@@ -154,13 +154,28 @@ def google_login(payload: GoogleLoginRequest, conn: psycopg.Connection = Depends
 
 @app.get("/api/stocks/{symbol}")
 def get_stock_prices(symbol: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
+    # --- HYBRID STRATEGY ---
+    # 1. First, try to get data from our own database (fast).
     data = query_stock_data(symbol, conn)
+    
+    # 2. If data is found, return it immediately.
     if data:
+        print(f"✓ Found cached data for {symbol} in DB.")
         return data
+    
+    # 3. If not in DB, fetch it live from the API (slower, but dynamic).
+    print(f"⚠️ Data for {symbol} not in cache. Fetching from API...")
     new_stock_data = fetch_stock_data(symbol)
+    
+    # If the API call fails (e.g., invalid symbol or rate limit), raise an error.
     if not new_stock_data:
-        raise HTTPException(status_code=404, detail=f"No data found for '{symbol}'.")
+        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{symbol}'. It may be an invalid symbol or the API limit was reached.")
+    
+    # 4. Store the newly fetched data in our database for future requests.
     store_stock_data(symbol, new_stock_data)
+    
+    # 5. Return the newly cached data to the user.
+    print(f"✓ Successfully cached and returning data for {symbol}.")
     return query_stock_data(symbol, conn)
 
 @app.post("/api/predict")

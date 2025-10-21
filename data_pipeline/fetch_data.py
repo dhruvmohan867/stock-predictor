@@ -152,39 +152,25 @@ def store_stock_data(symbol, stock_data):
 if __name__ == "__main__":
     print("Starting stock data pipeline...")
     
-    # Check environment variables
-    if not API_KEY:
-        print("Error: ALPHA_VANTAGE_API_KEY not found in environment variables")
+    if not API_KEY or not DATABASE_URL:
+        print("Error: Environment variables (API_KEY, DATABASE_URL) not set.")
         exit(1)
     
-    if not DATABASE_URL:
-        print("Error: DATABASE_URL not found in environment variables")
-        exit(1)
-    
-    print(f"✓ API Key loaded: {API_KEY[:8]}...")
-    print(f"✓ Database URL loaded")
-    
-    # Create tables if they don't exist
     if not create_tables_if_not_exist():
-        print("Failed to set up database tables")
+        print("Failed to set up database tables.")
         exit(1)
     
-    # --- MODIFICATION START ---
-
-    # 1. Define a list of companies you want to track
-    stocks_to_fetch = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"]
-    print(f"Attempting to process symbols: {stocks_to_fetch}")
-
-    # 2. Loop through each symbol in the list
-    for symbol in stocks_to_fetch:
+    # This list is now for pre-populating the DB with popular stocks.
+    # The backend will handle fetching any other stock on-demand.
+    stocks_to_prepopulate = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"]
+    
+    print(f"Pre-populating database with {len(stocks_to_prepopulate)} symbols...")
+    for symbol in stocks_to_prepopulate:
         print(f"\n--- Processing {symbol} ---")
-        
-        # 3. Fetch and store data for the current symbol
         stock_data = fetch_stock_data(symbol)
         if stock_data:
             store_stock_data(symbol, stock_data)
         else:
-            # Add a more informative message here
             print(f"Could not fetch data for {symbol}. This may be due to an invalid symbol or API rate limits.")
     
     print("\nPipeline finished.")

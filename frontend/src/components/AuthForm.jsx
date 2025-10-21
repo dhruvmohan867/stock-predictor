@@ -14,7 +14,7 @@ const AuthForm = ({ onLogin }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // --- Google callback handler ---
+  // --- Google Sign-In callback ---
   const handleGoogleCredential = async (response) => {
     try {
       const res = await fetch(`${API_BASE}/google-login`, {
@@ -33,21 +33,48 @@ const AuthForm = ({ onLogin }) => {
     }
   };
 
-  // --- Render Google button ---
+  // --- Load Google Sign-In script dynamically ---
   useEffect(() => {
-    if (window.google && GOOGLE_CLIENT_ID) {
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: handleGoogleCredential,
-      });
-      window.google.accounts.id.renderButton(
-        document.getElementById('googleSignInDiv'),
-        { theme: 'filled_blue', size: 'large', shape: 'rectangular', width: 250 }
-      );
-    }
+    const loadGoogleScript = () => {
+      if (document.getElementById('google-client-script')) {
+        // Script already loaded, just initialize button
+        if (window.google && GOOGLE_CLIENT_ID) {
+          window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: handleGoogleCredential,
+          });
+          window.google.accounts.id.renderButton(
+            document.getElementById('googleSignInDiv'),
+            { theme: 'filled_blue', size: 'large', shape: 'rectangular', width: 250 }
+          );
+        }
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.id = 'google-client-script';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        if (window.google && GOOGLE_CLIENT_ID) {
+          window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: handleGoogleCredential,
+          });
+          window.google.accounts.id.renderButton(
+            document.getElementById('googleSignInDiv'),
+            { theme: 'filled_blue', size: 'large', shape: 'rectangular', width: 250 }
+          );
+        }
+      };
+      document.body.appendChild(script);
+    };
+
+    loadGoogleScript();
   }, []);
 
-  // --- Handle login / register form submit ---
+  // --- Handle login/register ---
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -55,7 +82,7 @@ const AuthForm = ({ onLogin }) => {
 
     try {
       if (isLogin) {
-        // For LOGIN, we MUST use FormData for OAuth2PasswordRequestForm
+        // LOGIN
         const formData = new FormData();
         formData.append('username', username);
         formData.append('password', password);
@@ -65,30 +92,24 @@ const AuthForm = ({ onLogin }) => {
           body: formData,
         });
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ detail: 'Login failed' }));
-          throw new Error(errorData.detail);
-        }
-        
         const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Login failed');
+
         localStorage.setItem('token', data.access_token);
         localStorage.setItem('username', username);
         onLogin();
-
       } else {
-        // For REGISTER, we now send JSON
+        // REGISTER
         const response = await fetch(`${API_BASE}/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, email, password }),
         });
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ detail: 'Registration failed' }));
-          throw new Error(errorData.detail);
-        }
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Registration failed');
 
-        // Auto-login after successful registration
+        // Auto-login
         const loginForm = new FormData();
         loginForm.append('username', username);
         loginForm.append('password', password);
@@ -109,8 +130,8 @@ const AuthForm = ({ onLogin }) => {
         }
       }
     } catch (err) {
-      console.error('Fetch error:', err);
-      setError(err.message || 'Failed to fetch');
+      console.error('Auth error:', err);
+      setError(err.message || 'Something went wrong');
     } finally {
       setLoading(false);
     }
@@ -183,7 +204,7 @@ const AuthForm = ({ onLogin }) => {
         </div>
 
         {error && (
-          <p className={`text-sm ${error.includes('successful') ? 'text-green-400' : 'text-red-400'}`}>
+          <p className={`text-sm ${error.includes('success') ? 'text-green-400' : 'text-red-400'}`}>
             {error}
           </p>
         )}
@@ -199,8 +220,8 @@ const AuthForm = ({ onLogin }) => {
         </motion.button>
       </form>
 
-      <div className="mt-6">
-        <div id="googleSignInDiv" className="w-full flex justify-center" />
+      <div className="mt-6 flex justify-center">
+        <div id="googleSignInDiv" />
       </div>
 
       <div className="text-center mt-8 text-sm">

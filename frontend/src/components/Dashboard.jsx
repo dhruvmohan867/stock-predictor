@@ -8,21 +8,63 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.
 // A list of popular stocks for the watchlist feature
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"];
 
-// --- NEW: Logo Component ---
-// This component fetches a logo from a free service and provides a fallback.
+// --- NEW: Upgraded Logo Component ---
+// This component now tries multiple sources to find a logo, making it far more reliable.
 const StockLogo = ({ symbol, className }) => {
-  const [src, setSrc] = useState(`https://eodhistoricaldata.com/img/logos/US/${symbol}.png`);
+  const [logoUrl, setLogoUrl] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setSrc(`https://eodhistoricaldata.com/img/logos/US/${symbol}.png`);
+    const findLogo = async () => {
+      setLoading(true);
+      setLogoUrl(null);
+
+      if (!symbol) {
+        setLoading(false);
+        return;
+      }
+
+      // --- STRATEGY 1: Try the direct symbol-based logo provider (fastest) ---
+      const primaryUrl = `https://eodhistoricaldata.com/img/logos/US/${symbol.toUpperCase()}.png`;
+      
+      // --- STRATEGY 2: Use a lookup service to get company info, then use Clearbit ---
+      // This is our powerful fallback.
+      try {
+        // This free API gives us the company's website domain from its stock symbol.
+        const response = await fetch(`https://company.bigpicture.io/v1/companies/find?companyName=${symbol}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.length > 0 && data[0].domain) {
+            // Now use the domain with the Clearbit logo API.
+            const clearbitUrl = `https://logo.clearbit.com/${data[0].domain}`;
+            setLogoUrl(clearbitUrl);
+            setLoading(false);
+            return; // Found a logo, we're done.
+          }
+        }
+      } catch (error) {
+        console.warn(`Could not find domain for ${symbol}, falling back.`);
+      }
+
+      // If the second strategy fails, fall back to the first one.
+      setLogoUrl(primaryUrl);
+      setLoading(false);
+    };
+
+    findLogo();
   }, [symbol]);
 
   const handleError = () => {
-    // If the logo fails to load, we'll show a generic building icon instead.
-    setSrc(null);
+    // This is the final fallback if all strategies fail.
+    setLogoUrl(null);
+    setLoading(false);
   };
 
-  if (!src) {
+  if (loading) {
+    return <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`} />;
+  }
+
+  if (!logoUrl) {
     return (
       <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`}>
         <Building size="60%" />
@@ -30,7 +72,7 @@ const StockLogo = ({ symbol, className }) => {
     );
   }
 
-  return <img src={src} alt={`${symbol} logo`} className={className} onError={handleError} />;
+  return <img src={logoUrl} alt={`${symbol} logo`} className={className} onError={handleError} />;
 };
 
 

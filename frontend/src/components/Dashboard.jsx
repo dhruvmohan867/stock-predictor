@@ -8,6 +8,32 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.
 // A list of popular stocks for the watchlist feature
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"];
 
+// --- NEW: Logo Component ---
+// This component fetches a logo from a free service and provides a fallback.
+const StockLogo = ({ symbol, className }) => {
+  const [src, setSrc] = useState(`https://eodhistoricaldata.com/img/logos/US/${symbol}.png`);
+
+  useEffect(() => {
+    setSrc(`https://eodhistoricaldata.com/img/logos/US/${symbol}.png`);
+  }, [symbol]);
+
+  const handleError = () => {
+    // If the logo fails to load, we'll show a generic building icon instead.
+    setSrc(null);
+  };
+
+  if (!src) {
+    return (
+      <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`}>
+        <Building size="60%" />
+      </div>
+    );
+  }
+
+  return <img src={src} alt={`${symbol} logo`} className={className} onError={handleError} />;
+};
+
+
 const Dashboard = ({ onLogout }) => {
   const [symbol, setSymbol] = useState('');
   const [activeSymbol, setActiveSymbol] = useState('');
@@ -111,7 +137,13 @@ const Dashboard = ({ onLogout }) => {
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><Star size={20} className="text-yellow-400" /> Market Movers</h2>
             <div className="flex flex-wrap gap-2">
               {WATCHLIST_SYMBOLS.map(s => (
-                <button key={s} onClick={() => executeSearch(s)} className={`px-3 py-1 text-sm font-medium rounded-full transition ${activeSymbol === s ? 'bg-indigo-600 text-white' : 'bg-gray-700/50 hover:bg-gray-600'}`}>
+                <button 
+                  key={s} 
+                  onClick={() => executeSearch(s)} 
+                  className={`flex items-center gap-2 px-3 py-1 text-sm font-medium rounded-full transition ${activeSymbol === s ? 'bg-indigo-600 text-white' : 'bg-gray-700/50 hover:bg-gray-600'}`}
+                >
+                  {/* --- MODIFICATION: Added StockLogo to watchlist buttons --- */}
+                  <StockLogo symbol={s} className="w-4 h-4 rounded-full" />
                   {s}
                 </button>
               ))}
@@ -139,8 +171,9 @@ const Dashboard = ({ onLogout }) => {
 
           {stockData ? (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-              <div className="flex items-baseline gap-4">
-                <Building size={32} className="text-gray-500" />
+              <div className="flex items-center gap-4">
+                {/* --- MODIFICATION: Added StockLogo component --- */}
+                <StockLogo symbol={stockData.symbol} className="w-10 h-10 rounded-full bg-gray-700" />
                 <h1 className="text-4xl font-bold">{stockData.symbol}</h1>
               </div>
 

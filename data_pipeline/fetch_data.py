@@ -5,7 +5,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 import time
-import requests
+import requests  # <-- Already imported, now we'll use it
 from io import StringIO
 
 # -------------------------------------------------------------------------
@@ -134,10 +134,23 @@ if __name__ == "__main__":
         exit(1)
 
     try:
-        # Scrape S&P 500 symbols from Wikipedia
+        # --- FIX STARTS HERE: Add a browser User-Agent to avoid being blocked ---
         print("Fetching S&P 500 stock list from Wikipedia...")
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        sp500_df = pd.read_html(url)[0]
+        
+        # This header makes our request look like it's from a real browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Use requests to get the HTML content with the header
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # This will raise an error if the request failed
+
+        # Pass the HTML text to pandas
+        sp500_df = pd.read_html(StringIO(response.text))[0]
+        # --- FIX ENDS HERE ---
+
         # The symbol is in the 'Symbol' column. Some symbols might have dots, which we replace.
         symbols_to_fetch = sp500_df['Symbol'].str.replace('.', '-', regex=False).tolist()
         print(f"✅ Found {len(symbols_to_fetch)} symbols. Starting data fetch...")

@@ -1,9 +1,10 @@
 import os
 import psycopg
 import yfinance as yf
-import pandas as pd  # <-- FIX: Import pandas
+import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
+import time  # <-- ADD: Import the time library for delays
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -120,10 +121,9 @@ def store_stock_data(symbol, df):
         if 'conn' in locals():
             conn.close()
 
-# ----------------------------------------------------------------
-# -------------------------------------------------------------------------
+# --- MODIFICATION: Main block to fetch S&P 500 ---
 if __name__ == "__main__":
-    print("🚀 Starting AlphaPredict Yahoo Data Fetch Pipeline...\n")
+    print("🚀 Starting Stock Data Fetch Pipeline...\n")
 
     if not DATABASE_URL:
         print("❌ Missing DATABASE_URL in .env file")
@@ -133,13 +133,24 @@ if __name__ == "__main__":
         print("❌ Database setup failed. Exiting.")
         exit(1)
 
-    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JNJ", "MA", "NFLX"]
+    try:
+        # Scrape S&P 500 symbols from Wikipedia
+        print("Fetching S&P 500 stock list from Wikipedia...")
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        sp500_df = pd.read_html(url)[0]
+        # The symbol is in the 'Symbol' column. Some symbols might have dots, which we replace.
+        symbols_to_fetch = sp500_df['Symbol'].str.replace('.', '-', regex=False).tolist()
+        print(f"✅ Found {len(symbols_to_fetch)} symbols. Starting data fetch...")
+    except Exception as e:
+        print(f"Could not fetch S&P 500 list, using a default list. Error: {e}")
+        symbols_to_fetch = ["MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "NVDA", "JNJ", "MA", "META", "F"]
 
-    print(f"📊 Fetching {len(symbols)} stocks...\n")
-
-    for i, symbol in enumerate(symbols, start=1):
-        print(f"\n--- ({i}/{len(symbols)}) Processing {symbol} ---")
+    for i, symbol in enumerate(symbols_to_fetch, start=1):
+        print(f"\n--- ({i}/{len(symbols_to_fetch)}) Processing {symbol} ---")
         data = fetch_stock_data(symbol)
         store_stock_data(symbol, data)
+        # --- CRUCIAL: Wait for 1 second to avoid being rate-limited ---
+        print("--- Waiting 1 second ---")
+        time.sleep(1)
 
     print("\n✅ All data fetched and stored successfully!")

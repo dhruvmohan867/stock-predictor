@@ -1,8 +1,8 @@
 import os
 import sys
 import psycopg
-import yfinance as yf  # <-- ADD: Import yfinance
-import pandas as pd    # <-- ADD: Import pandas
+import yfinance as yf  
+import pandas as pd    
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware

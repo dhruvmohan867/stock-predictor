@@ -1,6 +1,7 @@
 import os
 import psycopg
 import yfinance as yf
+import pandas as pd  # <-- FIX: Import pandas
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -107,7 +108,7 @@ def store_stock_data(symbol, df):
                 float(row["Close"]),
                 int(row["Volume"]) if not pd.isna(row["Volume"]) else 0
             ))
-            inserted += 1
+            inserted += cur.rowcount # <-- FIX: Use cur.rowcount for accuracy
 
         conn.commit()
         print(f"💾 Stored {inserted} records for {symbol}")
@@ -119,8 +120,7 @@ def store_stock_data(symbol, df):
         if 'conn' in locals():
             conn.close()
 
-# -------------------------------------------------------------------------
-# 🚀 MAIN EXECUTION
+# ----------------------------------------------------------------
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     print("🚀 Starting AlphaPredict Yahoo Data Fetch Pipeline...\n")

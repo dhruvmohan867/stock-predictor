@@ -1,7 +1,8 @@
 import os
 import sys
 import psycopg
-import pandas as pd
+import yfinance as yf  # <-- ADD: Import yfinance
+import pandas as pd    # <-- ADD: Import pandas
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -100,6 +101,51 @@ def query_stock_data(symbol: str, conn: psycopg.Connection):
         prices = cur.fetchall()
         return {"symbol": symbol.upper(), "prices": [{"date": r[0].isoformat(), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": int(r[5])} for r in prices]}
 
+# --- NEW: Add the exact same data fetching functions from your pipeline ---
+
+def fetch_stock_data(symbol):
+    """Fetches daily stock data from Yahoo Finance."""
+    try:
+        print(f"🔄 Fetching data for {symbol} from Yahoo Finance...")
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period="1y")
+        if data.empty:
+            print(f"⚠️ No data found for {symbol}")
+            return None
+        print(f"✅ Data fetched successfully for {symbol}")
+        return data
+    except Exception as e:
+        print(f"❌ Error fetching {symbol}: {e}")
+        return None
+
+def store_stock_data(symbol, df):
+    """Stores stock data from Yahoo Finance into the database."""
+    if df is None or df.empty:
+        return
+
+    try:
+        conn = psycopg.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO stocks (symbol) VALUES (%s) ON CONFLICT (symbol) DO NOTHING RETURNING id", (symbol,))
+        result = cur.fetchone()
+        stock_id = result[0] if result else cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,)).fetchone()[0]
+
+        for date, row in df.iterrows():
+            cur.execute("""
+                INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (stock_id, date) DO NOTHING
+            """, (stock_id, date.date(), float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), int(row["Volume"]) if not pd.isna(row["Volume"]) else 0))
+        
+        conn.commit()
+    except Exception as e:
+        print(f"❌ Database error for {symbol}: {e}")
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+# --- END of new functions ---
+
+
 # --- ROUTES ---
 @app.get("/")
 def read_root():
@@ -154,27 +200,20 @@ def google_login(payload: GoogleLoginRequest, conn: psycopg.Connection = Depends
 
 @app.get("/api/stocks/{symbol}")
 def get_stock_prices(symbol: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
-    # --- HYBRID STRATEGY ---
-    # 1. First, try to get data from our own database (fast).
     data = query_stock_data(symbol, conn)
     
-    # 2. If data is found, return it immediately.
     if data:
         print(f"✓ Found cached data for {symbol} in DB.")
         return data
     
-    # 3. If not in DB, fetch it live from the API (slower, but dynamic).
     print(f"⚠️ Data for {symbol} not in cache. Fetching from API...")
-    new_stock_data = fetch_stock_data(symbol)
+    new_stock_data_df = fetch_stock_data(symbol) # This now calls the yfinance function
     
-    # If the API call fails (e.g., invalid symbol or rate limit), raise an error.
-    if not new_stock_data:
-        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{symbol}'. It may be an invalid symbol or the API limit was reached.")
+    if new_stock_data_df is None:
+        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{symbol}'. It may be an invalid symbol.")
     
-    # 4. Store the newly fetched data in our database for future requests.
-    store_stock_data(symbol, new_stock_data)
+    store_stock_data(symbol, new_stock_data_df)
     
-    # 5. Return the newly cached data to the user.
     print(f"✓ Successfully cached and returning data for {symbol}.")
     return query_stock_data(symbol, conn)
 

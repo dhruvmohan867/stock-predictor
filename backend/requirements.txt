@@ -12,3 +12,6 @@ pandas==2.2.3
 scikit-learn==1.5.2
 numpy==1.26.4
 requests==2.31.0
+passlib[bcrypt]==1.4.5
+python-jose[cryptography]==3.3.0
+yfinance==0.2.1

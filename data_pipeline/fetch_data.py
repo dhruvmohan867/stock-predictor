@@ -119,4 +119,40 @@ def store_stock_data(symbol, df):
     except Exception as e:
         print(f"❌ Database error for {symbol}: {e}")
 
+# -------------------------------------------------------------------------
+# 🚀 STEP 4: Main execution block to run the pipeline
+# -------------------------------------------------------------------------
+if __name__ == "__main__":
+    print("🚀 Starting Stock Data Fetch Pipeline...\n")
+
+    if not DATABASE_URL:
+        print("❌ Missing DATABASE_URL in .env file")
+        exit(1)
+
+    if not create_tables_if_not_exist():
+        print("❌ Database setup failed. Exiting.")
+        exit(1)
+
+    try:
+        # Scrape S&P 500 symbols from Wikipedia
+        print("Fetching S&P 500 stock list from Wikipedia...")
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        sp500_df = pd.read_html(url)[0]
+        # The symbol is in the 'Symbol' column. Some symbols might have dots, which we replace.
+        symbols_to_fetch = sp500_df['Symbol'].str.replace('.', '-', regex=False).tolist()
+        print(f"✅ Found {len(symbols_to_fetch)} symbols. Starting data fetch...")
+    except Exception as e:
+        print(f"Could not fetch S&P 500 list, using a default list. Error: {e}")
+        symbols_to_fetch = ["MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "NVDA", "JNJ", "MA", "META", "F"]
+
+    for i, symbol in enumerate(symbols_to_fetch, start=1):
+        print(f"\n--- ({i}/{len(symbols_to_fetch)}) Processing {symbol} ---")
+        data = fetch_stock_data(symbol)
+        store_stock_data(symbol, data)
+        # --- CRUCIAL: Wait for 1 second to avoid being rate-limited ---
+        print("--- Waiting 1 second ---")
+        time.sleep(1)
+
+    print("\n✅ All data fetched and stored successfully!")
+
 

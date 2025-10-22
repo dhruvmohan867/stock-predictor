@@ -37,7 +37,9 @@ def get_pool():
         if not dsn:
             raise RuntimeError("DATABASE_URL not configured.")
         dsn = _normalize_dsn(dsn)
-        pool = ConnectionPool(conninfo=dsn, min_size=1, max_size=10)
+        # --- FIX: Add prepare_threshold=None to the connection pool ---
+        # This prevents the "prepared statement already exists" error on the live server.
+        pool = ConnectionPool(conninfo=dsn, min_size=1, max_size=10, kwargs={'prepare_threshold': None})
         print("✓ Database connection pool initialized.")
     return pool
 

@@ -1,21 +1,26 @@
 import os
+import time
 import requests
 import psycopg
 from dotenv import load_dotenv
 from datetime import datetime
+
+# -------------------------------------------------------------------------
+# ⚙️ STEP 0: Load environment variables
+# -------------------------------------------------------------------------
 load_dotenv()
 
-# --- MODIFICATION: Use the new FMP API Key ---
 API_KEY = os.getenv("FMP_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# -------------------------------------------------------------------------
+# 🧱 STEP 1: Ensure database tables exist
+# -------------------------------------------------------------------------
 def create_tables_if_not_exist():
-    """Create database tables if they don't exist"""
     try:
         conn = psycopg.connect(DATABASE_URL)
         cur = conn.cursor()
-        
-        # Create stocks table
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS stocks (
                 id SERIAL PRIMARY KEY,
@@ -24,8 +29,7 @@ def create_tables_if_not_exist():
                 sector VARCHAR(50)
             )
         """)
-        
-        # Create stock_prices table
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS stock_prices (
                 id SERIAL PRIMARY KEY,
@@ -39,125 +43,157 @@ def create_tables_if_not_exist():
                 UNIQUE(stock_id, date)
             )
         """)
-        
+
         conn.commit()
-        print("✓ Database tables ready")
-        
+        print("✅ Database tables ready")
     except Exception as e:
-        print(f"Error setting up tables: {e}")
+        print(f"❌ Error setting up tables: {e}")
         return False
     finally:
         if 'conn' in locals():
             conn.close()
     return True
 
-# --- MODIFICATION: This function is completely replaced ---
-def fetch_stock_data(symbol="MSFT"):
-    """Fetches daily stock data from FinancialModelingPrep API."""
+# -------------------------------------------------------------------------
+# 🌐 STEP 2: Fetch data from Financial Modeling Prep API
+# -------------------------------------------------------------------------
+def fetch_stock_data(symbol):
     if not API_KEY:
-        print("Error: FMP_API_KEY not available in environment variables.")
+        print("❌ Error: FMP API key not found in .env")
         return None
-        
-    # FMP's endpoint for historical daily prices
-    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol.upper()}"
-    params = { "apikey": API_KEY }
-    
+
+    # FMP endpoint for daily historical prices
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}"
+    params = {"apikey": API_KEY, "serietype": "line"}
+
     try:
-        print(f"Fetching data for {symbol} from FMP...")
+        print(f"🔄 Fetching data for {symbol} from FMP...")
         response = requests.get(url, params=params)
         response.raise_for_status()
         data = response.json()
-        
-        # FMP returns an empty object for invalid symbols
+
         if not data or "historical" not in data:
-            print(f"API Error: No data returned for {symbol}. It may be an invalid symbol.")
+            print(f"⚠️ No data found for {symbol}. Keys: {list(data.keys())}")
             return None
-            
-        print(f"✓ Successfully fetched data for {symbol} from FMP")
+
+        print(f"✅ Successfully fetched {len(data['historical'])} records for {symbol}")
         return data
-        
     except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
+        print(f"❌ Request failed for {symbol}: {e}")
         return None
 
-# --- MODIFICATION: This function is updated to parse the FMP response ---
+# -------------------------------------------------------------------------
+# 💾 STEP 3: Store stock data into PostgreSQL
+# -------------------------------------------------------------------------
 def store_stock_data(symbol, stock_data):
-    """Stores stock data from FMP into the database."""
     if not stock_data or "historical" not in stock_data:
-        print("No valid stock data to store.")
+        print(f"⚠️ No valid data to store for {symbol}")
         return
-    
+
     try:
         conn = psycopg.connect(DATABASE_URL)
         cur = conn.cursor()
-        
-        # Insert or get stock info
+
+        # Insert or get stock id
         cur.execute("""
-            INSERT INTO stocks (symbol) VALUES (%s) 
-            ON CONFLICT (symbol) DO NOTHING RETURNING id
-        """, (stock_data.get("symbol", symbol),))
-        
+            INSERT INTO stocks (symbol, company_name)
+            VALUES (%s, %s)
+            ON CONFLICT (symbol) DO NOTHING
+            RETURNING id
+        """, (symbol, symbol))
+
         result = cur.fetchone()
         if result:
             stock_id = result[0]
         else:
-            cur.execute("SELECT id FROM stocks WHERE symbol = %s", (stock_data.get("symbol", symbol),))
-            stock_id = cur.fetchone()[0]
-        
+            cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,))
+            result = cur.fetchone()
+            if result:
+                stock_id = result[0]
+            else:
+                print(f"❌ Could not find or create record for {symbol}")
+                return
+
         # Insert price data
-        time_series = stock_data["historical"]
-        inserted_count = 0
-        
-        for prices in time_series:
-            # FMP uses different key names than Alpha Vantage
+        inserted = 0
+        for entry in stock_data["historical"]:
             cur.execute("""
                 INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (stock_id, date) DO NOTHING
             """, (
                 stock_id,
-                datetime.strptime(prices["date"], "%Y-%m-%d").date(),
-                float(prices["open"]),
-                float(prices["high"]),
-                float(prices["low"]),
-                float(prices["close"]),
-                int(prices["volume"])
+                datetime.strptime(entry["date"], "%Y-%m-%d").date(),
+                entry.get("open"),
+                entry.get("high"),
+                entry.get("low"),
+                entry.get("close"),
+                entry.get("volume", 0)
             ))
-            inserted_count += cur.rowcount
-        
+            inserted += 1
+
         conn.commit()
-        print(f"✓ Successfully stored/updated {inserted_count} price records for {symbol}")
-        
+        print(f"💾 Stored {inserted} records for {symbol}")
+
     except Exception as e:
-        print(f"Database error: {e}")
+        print(f"❌ Database error for {symbol}: {e}")
         if 'conn' in locals():
             conn.rollback()
     finally:
         if 'conn' in locals():
             conn.close()
 
-if __name__ == "__main__":
-    print("Starting stock data pipeline...")
-    
-    if not API_KEY or not DATABASE_URL:
-        print("Error: Environment variables (API_KEY, DATABASE_URL) not set.")
-        exit(1)
-    
-    if not create_tables_if_not_exist():
-        print("Failed to set up database tables.")
-        exit(1)
-    
-    # This list is now for pre-populating the DB with popular stocks.
-    # The backend will handle fetching any other stock on-demand.
-    stocks_to_prepopulate = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"]
-    
-    print(f"Pre-populating database with {len(stocks_to_prepopulate)} symbols...")
-    for symbol in stocks_to_prepopulate:
-        print(f"\n--- Processing {symbol} ---")
-        stock_data = fetch_stock_data(symbol)
-        if stock_data:
-            store_stock_data(symbol, stock_data)
+# -------------------------------------------------------------------------
+# 🧠 STEP 4: Fetch symbols from database
+# -------------------------------------------------------------------------
+def get_symbols_from_db():
+    try:
+        conn = psycopg.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT symbol FROM stocks ORDER BY symbol")
+        rows = cur.fetchall()
+        conn.close()
+        if rows:
+            return [r[0] for r in rows]
         else:
-            print(f"Could not fetch data for {symbol}. This may be due to an invalid symbol or API rate limits.")
-    
-    print("\nPipeline finished.")
+            print("⚠️ No symbols found in DB, using default list.")
+            return ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"]
+    except Exception as e:
+        print(f"❌ Error fetching symbols from DB: {e}")
+        return ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"]
+
+# -------------------------------------------------------------------------
+# 🚀 MAIN EXECUTION
+# -------------------------------------------------------------------------
+if __name__ == "__main__":
+    print("🚀 Starting AlphaPredict Data Fetch Pipeline (FMP version)...\n")
+
+    if not API_KEY:
+        print("❌ Missing FMP_API_KEY in .env file")
+        exit(1)
+
+    if not DATABASE_URL:
+        print("❌ Missing DATABASE_URL in .env file")
+        exit(1)
+
+    if not create_tables_if_not_exist():
+        print("❌ Database setup failed. Exiting.")
+        exit(1)
+
+    symbols = get_symbols_from_db()
+    print(f"📊 Found {len(symbols)} symbols to process: {symbols}")
+
+    for i, symbol in enumerate(symbols, start=1):
+        print(f"\n--- ({i}/{len(symbols)}) Processing {symbol} ---")
+        data = fetch_stock_data(symbol)
+
+        if data:
+            store_stock_data(symbol, data)
+        else:
+            print(f"⚠️ Skipping {symbol}, no data returned.")
+
+        # ⏳ FMP rate limit (avoid hitting free tier limit)
+        print("🕒 Waiting 15 seconds before next request...")
+        time.sleep(15)
+
+    print("\n✅ All available stock data fetched successfully!")

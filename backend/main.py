@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone # <-- MODIFICATION: Import datetime and timezone
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 import secrets
@@ -217,20 +217,43 @@ def google_login(payload: GoogleLoginRequest, conn: psycopg.Connection = Depends
 def get_stock_prices(symbol: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
     data = query_stock_data(symbol, conn)
     
-    if data:
-        print(f"✓ Found cached data for {symbol} in DB.")
+    # --- FIX STARTS HERE: Check if data is stale ---
+    is_stale = False
+    if data and data["prices"]:
+        # Get the date of the most recent price entry in our database
+        latest_db_date_str = data["prices"][0]["date"]
+        latest_db_date = datetime.fromisoformat(latest_db_date_str).date()
+        
+        # Get today's date
+        today = datetime.now(timezone.utc).date()
+        
+        # If the latest data we have is from before today, it's stale
+        if latest_db_date < today:
+            is_stale = True
+            print(f"⚠️ Data for {symbol} is stale (latest: {latest_db_date}). Re-fetching...")
+    # --- FIX ENDS HERE ---
+
+    # If we have data and it's NOT stale, return it immediately.
+    if data and not is_stale:
+        print(f"✓ Found fresh data for {symbol} in DB.")
         return data
     
-    print(f"⚠️ Data for {symbol} not in cache. Fetching from API...")
-    new_stock_data_df = fetch_stock_data(symbol) # This now calls the yfinance function
+    # If data is missing OR stale, fetch new data.
+    print(f"🔄 Fetching new/updated data for {symbol} from API...")
+    new_stock_data_df = fetch_stock_data(symbol)
     
     if new_stock_data_df is None:
+        # If fetching fails but we had stale data, it's better to return the old data than nothing.
+        if data:
+            print(f"⚠️ API fetch failed, returning stale data for {symbol}.")
+            return data
         raise HTTPException(status_code=404, detail=f"Could not fetch data for '{symbol}'. It may be an invalid symbol.")
     
-    # --- FIX: Pass the connection object to the function ---
+    # Store the newly fetched data. `store_stock_data` is smart and will only add new days.
     store_stock_data(symbol, new_stock_data_df, conn)
     
-    print(f"✓ Successfully cached and returning data for {symbol}.")
+    # Re-query the database to get the complete, updated dataset.
+    print(f"✓ Successfully cached and returning updated data for {symbol}.")
     return query_stock_data(symbol, conn)
 
 @app.post("/api/predict")

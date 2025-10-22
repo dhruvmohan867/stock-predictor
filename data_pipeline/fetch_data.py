@@ -134,29 +134,43 @@ if __name__ == "__main__":
         exit(1)
 
     try:
-        # --- FIX STARTS HERE: Add a browser User-Agent to avoid being blocked ---
+        # --- Get the full list of S&P 500 symbols ---
         print("Fetching S&P 500 stock list from Wikipedia...")
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        
-        # This header makes our request look like it's from a real browser
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        
-        # Use requests to get the HTML content with the header
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # This will raise an error if the request failed
-
-        # Pass the HTML text to pandas
+        response.raise_for_status()
         sp500_df = pd.read_html(StringIO(response.text))[0]
-        # --- FIX ENDS HERE ---
-
-        # The symbol is in the 'Symbol' column. Some symbols might have dots, which we replace.
-        symbols_to_fetch = sp500_df['Symbol'].str.replace('.', '-', regex=False).tolist()
-        print(f"✅ Found {len(symbols_to_fetch)} symbols. Starting data fetch...")
+        all_symbols = sp500_df['Symbol'].str.replace('.', '-', regex=False).tolist()
+        print(f"✅ Found {len(all_symbols)} total symbols in S&P 500.")
     except Exception as e:
         print(f"Could not fetch S&P 500 list, using a default list. Error: {e}")
-        symbols_to_fetch = ["MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "NVDA", "JNJ", "MA", "META", "F"]
+        all_symbols = ["MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "NVDA", "JNJ", "MA", "META", "F"]
+
+    # --- NEW: Check for already processed symbols to allow resuming ---
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT symbol FROM stocks")
+                # Create a set for fast lookups
+                processed_symbols = {row[0] for row in cur.fetchall()}
+        print(f"Found {len(processed_symbols)} symbols already in the database.")
+        
+        # Filter the list to only include symbols that have NOT been processed
+        symbols_to_fetch = [s for s in all_symbols if s not in processed_symbols]
+        
+        if not symbols_to_fetch:
+            print("\n✅ All S&P 500 stocks are already up-to-date in the database. Nothing to do.")
+            exit(0)
+            
+        print(f"➡️ {len(symbols_to_fetch)} new symbols to fetch.")
+
+    except Exception as e:
+        print(f"⚠️ Could not check for existing symbols, will attempt to fetch all. Error: {e}")
+        symbols_to_fetch = all_symbols
+    # --- END NEW ---
 
     for i, symbol in enumerate(symbols_to_fetch, start=1):
         print(f"\n--- ({i}/{len(symbols_to_fetch)}) Processing {symbol} ---")

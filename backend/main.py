@@ -19,7 +19,6 @@ from psycopg_pool import ConnectionPool
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from data_pipeline.fetch_data import fetch_stock_data, store_stock_data
 
 load_dotenv()
 
@@ -118,30 +117,29 @@ def fetch_stock_data(symbol):
         print(f"❌ Error fetching {symbol}: {e}")
         return None
 
-def store_stock_data(symbol, df):
+# --- FIX: This function now accepts a 'conn' object ---
+def store_stock_data(symbol, df, conn: psycopg.Connection):
     """Stores stock data from Yahoo Finance into the database."""
     if df is None or df.empty:
         return
 
     try:
-        conn = psycopg.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("INSERT INTO stocks (symbol) VALUES (%s) ON CONFLICT (symbol) DO NOTHING RETURNING id", (symbol,))
-        result = cur.fetchone()
-        stock_id = result[0] if result else cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,)).fetchone()[0]
+        # It now uses the connection passed to it instead of creating a new one.
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO stocks (symbol) VALUES (%s) ON CONFLICT (symbol) DO NOTHING RETURNING id", (symbol,))
+            result = cur.fetchone()
+            stock_id = result[0] if result else cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,)).fetchone()[0]
 
-        for date, row in df.iterrows():
-            cur.execute("""
-                INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (stock_id, date) DO NOTHING
-            """, (stock_id, date.date(), float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), int(row["Volume"]) if not pd.isna(row["Volume"]) else 0))
-        
-        conn.commit()
+            for date, row in df.iterrows():
+                cur.execute("""
+                    INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (stock_id, date) DO NOTHING
+                """, (stock_id, date.date(), float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), int(row["Volume"]) if not pd.isna(row["Volume"]) else 0))
+            
+            conn.commit()
     except Exception as e:
         print(f"❌ Database error for {symbol}: {e}")
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        conn.rollback() # Rollback on error
 
 # --- END of new functions ---
 
@@ -212,7 +210,8 @@ def get_stock_prices(symbol: str, conn: psycopg.Connection = Depends(get_db_conn
     if new_stock_data_df is None:
         raise HTTPException(status_code=404, detail=f"Could not fetch data for '{symbol}'. It may be an invalid symbol.")
     
-    store_stock_data(symbol, new_stock_data_df)
+    # --- FIX: Pass the connection object to the function ---
+    store_stock_data(symbol, new_stock_data_df, conn)
     
     print(f"✓ Successfully cached and returning data for {symbol}.")
     return query_stock_data(symbol, conn)

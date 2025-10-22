@@ -128,7 +128,22 @@ def store_stock_data(symbol, df, conn: psycopg.Connection):
         with conn.cursor() as cur:
             cur.execute("INSERT INTO stocks (symbol) VALUES (%s) ON CONFLICT (symbol) DO NOTHING RETURNING id", (symbol,))
             result = cur.fetchone()
-            stock_id = result[0] if result else cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,)).fetchone()[0]
+            
+            # --- FIX: Correctly fetch the stock_id if it already exists ---
+            if result:
+                stock_id = result[0]
+            else:
+                # 1. Execute the query first
+                cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,))
+                # 2. Then fetch the result
+                stock_id_result = cur.fetchone()
+                if stock_id_result:
+                    stock_id = stock_id_result[0]
+                else:
+                    # This case should ideally not happen, but it's good to handle it.
+                    print(f"❌ Critical error: Could not find or create stock_id for {symbol}")
+                    return 
+            # --- END FIX ---
 
             for date, row in df.iterrows():
                 cur.execute("""

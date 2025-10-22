@@ -72,7 +72,7 @@ def fetch_stock_data(symbol):
 # -------------------------------------------------------------------------
 # 💾 STEP 3: Store stock data into PostgreSQL (safe & stable)
 # -------------------------------------------------------------------------
-def store_stock_data(symbol, df):
+def store_stock_data(symbol, company_name, df): # <-- MODIFICATION: Accept company_name
     """Store fetched data safely in PostgreSQL."""
     if df is None or df.empty:
         print(f"⚠️ No data to store for {symbol}")
@@ -82,13 +82,14 @@ def store_stock_data(symbol, df):
         # Disable prepared statements (fixes `_pg3_0` issue)
         with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
             with conn.cursor() as cur:
-                # Insert or get stock ID
+                # --- MODIFICATION: Insert the full company name ---
+                # Also, update the company name if the symbol already exists.
                 cur.execute("""
                     INSERT INTO stocks (symbol, company_name)
                     VALUES (%s, %s)
-                    ON CONFLICT (symbol) DO NOTHING
+                    ON CONFLICT (symbol) DO UPDATE SET company_name = EXCLUDED.company_name
                     RETURNING id
-                """, (symbol, symbol))
+                """, (symbol, company_name))
 
                 result = cur.fetchone()
                 if result:
@@ -135,7 +136,7 @@ if __name__ == "__main__":
 
     try:
         # --- Get the full list of S&P 500 symbols ---
-        print("Fetching S&P 500 stock list from Wikipedia...")
+       
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -143,39 +144,52 @@ if __name__ == "__main__":
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         sp500_df = pd.read_html(StringIO(response.text))[0]
-        all_symbols = sp500_df['Symbol'].str.replace('.', '-', regex=False).tolist()
-        print(f"✅ Found {len(all_symbols)} total symbols in S&P 500.")
+        
+        # --- MODIFICATION: Create a list of company objects (symbol + name) ---
+        all_companies = [
+            {'symbol': row['Symbol'].replace('.', '-', regex=False), 'name': row['Security']}
+            for _, row in sp500_df.iterrows()
+        ]
+        print(f"✅ Found {len(all_companies)} total companies in S&P 500.")
+
     except Exception as e:
         print(f"Could not fetch S&P 500 list, using a default list. Error: {e}")
-        all_symbols = ["MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "NVDA", "JNJ", "MA", "META", "F"]
+        all_companies = [
+            {'symbol': "MSFT", 'name': "Microsoft"}, {'symbol': "AAPL", 'name': "Apple"},
+            {'symbol': "GOOGL", 'name': "Alphabet"}, {'symbol': "AMZN", 'name': "Amazon"},
+            {'symbol': "TSLA", 'name': "Tesla"}, {'symbol': "NVDA", 'name': "NVIDIA"},
+            {'symbol': "JNJ", 'name': "Johnson & Johnson"}, {'symbol': "MA", 'name': "Mastercard"},
+            {'symbol': "META", 'name': "Meta Platforms"}, {'symbol': "F", 'name': "Ford Motor"}
+        ]
 
-    # --- NEW: Check for already processed symbols to allow resuming ---
+    # --- MODIFICATION: Check for already processed symbols to allow resuming ---
     try:
         with psycopg.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT symbol FROM stocks")
-                # Create a set for fast lookups
                 processed_symbols = {row[0] for row in cur.fetchall()}
         print(f"Found {len(processed_symbols)} symbols already in the database.")
         
-        # Filter the list to only include symbols that have NOT been processed
-        symbols_to_fetch = [s for s in all_symbols if s not in processed_symbols]
+        # Filter the list to only include companies whose symbols have NOT been processed
+        companies_to_fetch = [c for c in all_companies if c['symbol'] not in processed_symbols]
         
-        if not symbols_to_fetch:
+        if not companies_to_fetch:
             print("\n✅ All S&P 500 stocks are already up-to-date in the database. Nothing to do.")
             exit(0)
             
-        print(f"➡️ {len(symbols_to_fetch)} new symbols to fetch.")
+        print(f"➡️ {len(companies_to_fetch)} new companies to fetch.")
 
     except Exception as e:
         print(f"⚠️ Could not check for existing symbols, will attempt to fetch all. Error: {e}")
-        symbols_to_fetch = all_symbols
-    # --- END NEW ---
+        companies_to_fetch = all_companies
+    # --- END MODIFICATION ---
 
-    for i, symbol in enumerate(symbols_to_fetch, start=1):
-        print(f"\n--- ({i}/{len(symbols_to_fetch)}) Processing {symbol} ---")
+    for i, company in enumerate(companies_to_fetch, start=1):
+        symbol = company['symbol']
+        name = company['name']
+        print(f"\n--- ({i}/{len(companies_to_fetch)}) Processing {symbol} ({name}) ---")
         data = fetch_stock_data(symbol)
-        store_stock_data(symbol, data)
+        store_stock_data(symbol, name, data) # <-- MODIFICATION: Pass name to store function
         # --- CRUCIAL: Wait for 1 second to avoid being rate-limited ---
         print("--- Waiting 1 second ---")
         time.sleep(1)

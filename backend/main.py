@@ -91,16 +91,27 @@ class PredictionRequest(BaseModel):
     symbol: str
 
 # --- HELPER: QUERY STOCK DATA ---
-def query_stock_data(symbol: str, conn: psycopg.Connection):
+def query_stock_data(search_term: str, conn: psycopg.Connection): # <-- MODIFICATION: Use a generic search_term
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol.upper(),))
+        # --- MODIFICATION: Search by symbol OR company name ---
+        # The ILIKE operator is case-insensitive.
+        cur.execute("""
+            SELECT id, symbol, company_name 
+            FROM stocks 
+            WHERE symbol ILIKE %s OR company_name ILIKE %s
+        """, (f"{search_term.upper()}", f"%{search_term}%"))
+        
         stock_record = cur.fetchone()
         if not stock_record:
             return None
-        stock_id = stock_record[0]
+            
+        stock_id, symbol, company_name = stock_record
+        # --- END MODIFICATION ---
+
         cur.execute("SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id = %s ORDER BY date DESC", (stock_id,))
         prices = cur.fetchall()
-        return {"symbol": symbol.upper(), "prices": [{"date": r[0].isoformat(), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": int(r[5])} for r in prices]}
+        # --- MODIFICATION: Return the full company info ---
+        return {"symbol": symbol, "company_name": company_name, "prices": [{"date": r[0].isoformat(), "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": int(r[5])} for r in prices]}
 
 # --- NEW: Add the exact same data fetching functions from your pipeline ---
 
@@ -120,7 +131,7 @@ def fetch_stock_data(symbol):
         return None
 
 # --- FIX: This function now accepts a 'conn' object ---
-def store_stock_data(symbol, df, conn: psycopg.Connection):
+def store_stock_data(symbol, company_name, df, conn: psycopg.Connection): # <-- MODIFICATION: Accept company_name
     """Stores stock data from Yahoo Finance into the database."""
     if df is None or df.empty:
         return
@@ -128,7 +139,13 @@ def store_stock_data(symbol, df, conn: psycopg.Connection):
     try:
         # It now uses the connection passed to it instead of creating a new one.
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO stocks (symbol) VALUES (%s) ON CONFLICT (symbol) DO NOTHING RETURNING id", (symbol,))
+            # --- MODIFICATION: Update company name on conflict ---
+            cur.execute("""
+                INSERT INTO stocks (symbol, company_name) VALUES (%s, %s) 
+                ON CONFLICT (symbol) DO UPDATE SET company_name = EXCLUDED.company_name
+                RETURNING id
+            """, (symbol, company_name))
+            
             result = cur.fetchone()
             
             # --- FIX: Correctly fetch the stock_id if it already exists ---
@@ -213,9 +230,9 @@ def google_login(payload: GoogleLoginRequest, conn: psycopg.Connection = Depends
     access_token = auth.create_access_token(data={"sub": username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     return {"access_token": access_token, "token_type": "bearer", "username": username}
 
-@app.get("/api/stocks/{symbol}")
-def get_stock_prices(symbol: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
-    data = query_stock_data(symbol, conn)
+@app.get("/api/stocks/{search_term}") # <-- MODIFICATION: Use a generic search_term
+def get_stock_prices(search_term: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
+    data = query_stock_data(search_term, conn)
     
     # --- FIX STARTS HERE: Check if data is stale ---
     is_stale = False
@@ -230,31 +247,35 @@ def get_stock_prices(symbol: str, conn: psycopg.Connection = Depends(get_db_conn
         # If the latest data we have is from before today, it's stale
         if latest_db_date < today:
             is_stale = True
-            print(f"⚠️ Data for {symbol} is stale (latest: {latest_db_date}). Re-fetching...")
+            print(f"⚠️ Data for {data['symbol']} is stale (latest: {latest_db_date}). Re-fetching...")
     # --- FIX ENDS HERE ---
 
     # If we have data and it's NOT stale, return it immediately.
     if data and not is_stale:
-        print(f"✓ Found fresh data for {symbol} in DB.")
+        print(f"✓ Found fresh data for {data['symbol']} in DB.")
         return data
     
     # If data is missing OR stale, fetch new data.
-    print(f"🔄 Fetching new/updated data for {symbol} from API...")
-    new_stock_data_df = fetch_stock_data(symbol)
+    # We must use the actual symbol for the API call, not the search term.
+    symbol_to_fetch = data['symbol'] if data else search_term.upper()
+    print(f"🔄 Fetching new/updated data for {symbol_to_fetch} from API...")
+    new_stock_data_df = fetch_stock_data(symbol_to_fetch)
     
     if new_stock_data_df is None:
         # If fetching fails but we had stale data, it's better to return the old data than nothing.
         if data:
-            print(f"⚠️ API fetch failed, returning stale data for {symbol}.")
+            print(f"⚠️ API fetch failed, returning stale data for {data['symbol']}.")
             return data
-        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{symbol}'. It may be an invalid symbol.")
+        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{search_term}'. It may be an invalid symbol.")
     
-    # Store the newly fetched data. `store_stock_data` is smart and will only add new days.
-    store_stock_data(symbol, new_stock_data_df, conn)
+    # Store the newly fetched data. We need a company name.
+    # If we have old data, use its name. Otherwise, default to the symbol.
+    company_name_to_store = data['company_name'] if data and data.get('company_name') else symbol_to_fetch
+    store_stock_data(symbol_to_fetch, company_name_to_store, new_stock_data_df, conn)
     
     # Re-query the database to get the complete, updated dataset.
-    print(f"✓ Successfully cached and returning updated data for {symbol}.")
-    return query_stock_data(symbol, conn)
+    print(f"✓ Successfully cached and returning updated data for {symbol_to_fetch}.")
+    return query_stock_data(symbol_to_fetch, conn)
 
 @app.post("/api/predict")
 def predict_stock_price(request: PredictionRequest, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):

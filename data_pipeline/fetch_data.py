@@ -72,7 +72,7 @@ def fetch_stock_data(symbol):
 # -------------------------------------------------------------------------
 # 💾 STEP 3: Store stock data into PostgreSQL (safe & stable)
 # -------------------------------------------------------------------------
-def store_stock_data(symbol, company_name, df): # <-- MODIFICATION: Accept company_name
+def store_stock_data(symbol, company_name, df):
     """Store fetched data safely in PostgreSQL."""
     if df is None or df.empty:
         print(f"⚠️ No data to store for {symbol}")
@@ -145,12 +145,13 @@ if __name__ == "__main__":
         response.raise_for_status()
         sp500_df = pd.read_html(StringIO(response.text))[0]
         
-        # --- MODIFICATION: Create a list of company objects (symbol + name) ---
+        # --- FIX: Remove the 'regex' argument from the string replace method ---
         all_companies = [
-            {'symbol': row['Symbol'].replace('.', '-', regex=False), 'name': row['Security']}
+            {'symbol': row['Symbol'].replace('.', '-'), 'name': row['Security']}
             for _, row in sp500_df.iterrows()
         ]
         print(f"✅ Found {len(all_companies)} total companies in S&P 500.")
+        print(f"\n➡️ Total companies to process: {len(all_companies)}")
 
     except Exception as e:
         print(f"Could not fetch S&P 500 list, using a default list. Error: {e}")
@@ -159,10 +160,11 @@ if __name__ == "__main__":
             {'symbol': "GOOGL", 'name': "Alphabet"}, {'symbol': "AMZN", 'name': "Amazon"},
             {'symbol': "TSLA", 'name': "Tesla"}, {'symbol': "NVDA", 'name': "NVIDIA"},
             {'symbol': "JNJ", 'name': "Johnson & Johnson"}, {'symbol': "MA", 'name': "Mastercard"},
-            {'symbol': "META", 'name': "Meta Platforms"}, {'symbol': "F", 'name': "Ford Motor"}
+            {'symbol': "META", 'name': "Meta Platforms"}, {'symbol': "F", 'name': "Ford Motor"},
+            {'symbol': "RELIANCE.NS", 'name': "Reliance Industries"} # Example
         ]
 
-    # --- MODIFICATION: Check for already processed symbols to allow resuming ---
+    # --- Check for already processed symbols to allow resuming ---
     try:
         with psycopg.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
@@ -170,8 +172,10 @@ if __name__ == "__main__":
                 processed_symbols = {row[0] for row in cur.fetchall()}
         print(f"Found {len(processed_symbols)} symbols already in the database.")
         
-        # Filter the list to only include companies whose symbols have NOT been processed
-        companies_to_fetch = [c for c in all_companies if c['symbol'] not in processed_symbols]
+        # --- FIX: Temporarily disable the resume feature to force an update ---
+        # We will process ALL companies to ensure their names are updated.
+        companies_to_fetch = all_companies
+        # companies_to_fetch = [c for c in all_companies if c['symbol'] not in processed_symbols] # <-- This line is temporarily disabled
         
         if not companies_to_fetch:
             print("\n✅ All S&P 500 stocks are already up-to-date in the database. Nothing to do.")

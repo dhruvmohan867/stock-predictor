@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { TrendingUp, DollarSign, Activity, LogOut, Search, BarChart3, AlertCircle, Loader, Building, Star } from 'lucide-react';
+import { TrendingUp, DollarSign, Activity, LogOut, Search, BarChart3, AlertCircle, Loader, Building, Star , ArrowUp, ArrowDown, Briefcase  } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.onrender.com';
 
 // A list of popular stocks for the watchlist feature
-const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA"];
-
+const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "RELIANCE.NS"];
 // --- NEW: Upgraded Logo Component ---
 // This component now tries multiple sources to find a logo, making it far more reliable.
 const StockLogo = ({ symbol, className }) => {
@@ -138,7 +137,18 @@ const Dashboard = ({ onLogout }) => {
     price: p.close,
   })) || [];
 
-  const latestPrice = stockData?.prices?.[0]?.close || 0;
+  // --- MODIFICATION: prefer live current price, fallback to latest close ---
+  const latestPrice = stockData?.live_info?.currentPrice ?? stockData?.prices?.[0]?.close ?? 0;
+
+  // Helper to format large numbers (market cap)
+  const formatLargeNumber = (num) => {
+    if (!num && num !== 0) return '--';
+    if (num >= 1_000_000_000_000) return `${(num / 1_000_000_000_000).toFixed(2)}T`;
+    if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(2)}B`;
+    if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
+    return `${num}`;
+  };
+
   const priceChange = prediction ? (prediction.predicted_next_day_close - latestPrice) : 0;
   const priceChangePercent = prediction && latestPrice ? ((priceChange / latestPrice) * 100) : 0;
 
@@ -210,28 +220,39 @@ const Dashboard = ({ onLogout }) => {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
               <div className="flex items-center gap-4">
                 <StockLogo symbol={stockData.symbol} className="w-10 h-10 rounded-full bg-gray-700" />
-                <h1 className="text-4xl font-bold">{stockData.symbol}</h1>
+                <div>
+                  <h1 className="text-4xl font-bold">{stockData.symbol}</h1>
+                  {/* optional: show company name if available */}
+                  {stockData.company_name && <p className="text-gray-400">{stockData.company_name}</p>}
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {[
-                  { title: 'Current Price', value: `$${latestPrice.toFixed(2)}`, icon: DollarSign, color: 'indigo' },
-                  { title: 'Predicted Price', value: prediction ? `$${prediction.predicted_next_day_close.toFixed(2)}` : '--', icon: Activity, color: 'green', change: prediction ? { value: priceChange, percent: priceChangePercent } : null },
-                  { title: 'Data Points', value: stockData.prices.length, icon: BarChart3, color: 'purple', sub: 'records' }
-                ].map(item => (
-                  <div key={item.title} className="bg-gray-800/50 border border-gray-700 rounded-xl shadow-lg p-6">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-gray-400 text-sm font-medium">{item.title}</span>
-                      <item.icon className={`text-${item.color}-400`} size={20} />
-                    </div>
-                    <div className="text-3xl font-bold">{item.value}</div>
-                    {item.change ? (
-                      <div className={`text-sm mt-1 font-semibold ${item.change.value >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {item.change.value >= 0 ? '▲' : '▼'} {Math.abs(item.change.value).toFixed(2)} ({item.change.percent.toFixed(2)}%)
-                      </div>
-                    ) : item.sub && <div className="text-xs text-gray-500 mt-1">{item.sub}</div>}
-                  </div>
-                ))}
+              {/* --- MODIFICATION: cards include live stats --- */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <InfoCard
+                  title="Current Price"
+                  value={latestPrice ? `$${Number(latestPrice).toFixed(2)}` : '--'}
+                  icon={DollarSign}
+                  color="indigo"
+                />
+                <InfoCard
+                  title="Market Cap"
+                  value={formatLargeNumber(stockData?.live_info?.marketCap)}
+                  icon={Briefcase}
+                  color="blue"
+                />
+                <InfoCard
+                  title="Day's High"
+                  value={stockData?.live_info?.dayHigh ? `$${Number(stockData.live_info.dayHigh).toFixed(2)}` : '--'}
+                  icon={ArrowUp}
+                  color="green"
+                />
+                <InfoCard
+                  title="Day's Low"
+                  value={stockData?.live_info?.dayLow ? `$${Number(stockData.live_info.dayLow).toFixed(2)}` : '--'}
+                  icon={ArrowDown}
+                  color="red"
+                />
               </div>
 
               {!prediction && (
@@ -282,5 +303,21 @@ const Dashboard = ({ onLogout }) => {
     </div>
   );
 };
+
+// --- NEW: small reusable card component at bottom of file ---
+const InfoCard = ({ title, value, icon: Icon, color, change, sub }) => (
+  <div className="bg-gray-800/50 border border-gray-700 rounded-xl shadow-lg p-6">
+    <div className="flex items-center justify-between mb-2">
+      <span className="text-gray-400 text-sm font-medium">{title}</span>
+      <Icon className={`text-${color}-400`} size={20} />
+    </div>
+    <div className="text-3xl font-bold">{value}</div>
+    {change ? (
+      <div className={`text-sm mt-1 font-semibold ${change.value >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        {change.value >= 0 ? '▲' : '▼'} {Math.abs(change.value).toFixed(2)} ({change.percent.toFixed(2)}%)
+      </div>
+    ) : sub && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
+  </div>
+);
 
 export default Dashboard;

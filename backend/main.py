@@ -1,7 +1,7 @@
 import os
 import sys
 import psycopg
-import yfinance as yf  
+import yfinance as yf
 import pandas as pd    
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -116,19 +116,32 @@ def query_stock_data(search_term: str, conn: psycopg.Connection): # <-- MODIFICA
 # --- NEW: Add the exact same data fetching functions from your pipeline ---
 
 def fetch_stock_data(symbol):
-    """Fetches daily stock data from Yahoo Finance."""
+    """Fetches daily stock data and live info from Yahoo Finance."""
     try:
         print(f"🔄 Fetching data for {symbol} from Yahoo Finance...")
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period="1y")
-        if data.empty:
-            print(f"⚠️ No data found for {symbol}")
-            return None
-        print(f"✅ Data fetched successfully for {symbol}")
-        return data
+        
+        # Fetch historical data
+        history_df = ticker.history(period="1y")
+        if history_df.empty:
+            print(f"⚠️ No historical data found for {symbol}")
+            return None, None
+
+        # --- NEW: Fetch live ticker info ---
+        info = ticker.info
+        live_info = {
+            "marketCap": info.get("marketCap"),
+            "dayHigh": info.get("dayHigh"),
+            "dayLow": info.get("dayLow"),
+            "currentPrice": info.get("regularMarketPrice") or info.get("currentPrice"),
+        }
+        
+        print(f"✅ Data and live info fetched successfully for {symbol}")
+        return history_df, live_info
+
     except Exception as e:
         print(f"❌ Error fetching {symbol}: {e}")
-        return None
+        return None, None
 
 # --- FIX: This function now accepts a 'conn' object ---
 def store_stock_data(symbol, company_name, df, conn: psycopg.Connection): # <-- MODIFICATION: Accept company_name
@@ -234,48 +247,48 @@ def google_login(payload: GoogleLoginRequest, conn: psycopg.Connection = Depends
 def get_stock_prices(search_term: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
     data = query_stock_data(search_term, conn)
     
-    # --- FIX STARTS HERE: Check if data is stale ---
+    # --- FIX STARTS HERE: A more intelligent stale check ---
     is_stale = False
     if data and data["prices"]:
-        # Get the date of the most recent price entry in our database
-        latest_db_date_str = data["prices"][0]["date"]
-        latest_db_date = datetime.fromisoformat(latest_db_date_str).date()
-        
-        # Get today's date
+        latest_db_date = datetime.fromisoformat(data["prices"][0]["date"]).date()
         today = datetime.now(timezone.utc).date()
         
-        # If the latest data we have is from before today, it's stale
-        if latest_db_date < today:
+        # Check if today is a weekday (Monday=0, Sunday=6)
+        is_weekday = today.weekday() < 5 
+
+        # Data is stale if the latest entry is from before today AND today is a weekday.
+        # This prevents trying to fetch new data on weekends.
+        if is_weekday and latest_db_date < today:
             is_stale = True
-            print(f"⚠️ Data for {data['symbol']} is stale (latest: {latest_db_date}). Re-fetching...")
+            print(f"⚠️ Data for {data['symbol']} is stale (latest: {latest_db_date}). Re-fetching on a trading day...")
     # --- FIX ENDS HERE ---
 
-    # If we have data and it's NOT stale, return it immediately.
+    # If we have data and it's NOT stale, return it immediately WITH live info.
     if data and not is_stale:
-        print(f"✓ Found fresh data for {data['symbol']} in DB.")
+        print(f"✓ Found fresh data for {data['symbol']} in DB. Attaching live info...")
+        live_info = get_live_info(data["symbol"])
+        if live_info:
+            data["live_info"] = live_info
         return data
-    
-    # If data is missing OR stale, fetch new data.
-    # We must use the actual symbol for the API call, not the search term.
+
+    # If data is missing OR stale, fetch and store history, then attach live info.
     symbol_to_fetch = data['symbol'] if data else search_term.upper()
     print(f"🔄 Fetching new/updated data for {symbol_to_fetch} from API...")
-    new_stock_data_df = fetch_stock_data(symbol_to_fetch)
-    
-    if new_stock_data_df is None:
-        # If fetching fails but we had stale data, it's better to return the old data than nothing.
+    new_history_df, live_info = fetch_stock_data(symbol_to_fetch)
+    if new_history_df is None:
         if data:
             print(f"⚠️ API fetch failed, returning stale data for {data['symbol']}.")
             return data
-        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{search_term}'. It may be an invalid symbol.")
-    
-    # Store the newly fetched data. We need a company name.
-    # If we have old data, use its name. Otherwise, default to the symbol.
+        raise HTTPException(status_code=404, detail=f"Could not fetch data for '{search_term}'.")
+
     company_name_to_store = data['company_name'] if data and data.get('company_name') else symbol_to_fetch
-    store_stock_data(symbol_to_fetch, company_name_to_store, new_stock_data_df, conn)
-    
-    # Re-query the database to get the complete, updated dataset.
+    store_stock_data(symbol_to_fetch, company_name_to_store, new_history_df, conn)
+
+    final_data = query_stock_data(symbol_to_fetch, conn)
+    if final_data:
+        final_data["live_info"] = live_info or get_live_info(symbol_to_fetch)
     print(f"✓ Successfully cached and returning updated data for {symbol_to_fetch}.")
-    return query_stock_data(symbol_to_fetch, conn)
+    return final_data
 
 @app.post("/api/predict")
 def predict_stock_price(request: PredictionRequest, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):

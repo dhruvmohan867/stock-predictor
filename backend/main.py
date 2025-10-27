@@ -6,6 +6,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Response  # <-- add
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
@@ -51,6 +52,21 @@ def get_db_connection():
 # --- FASTAPI APP SETUP ---
 app = FastAPI()
 
+# CORS: allow your exact domain and any Vercel preview domains
+FRONTEND_ORIGINS = [
+    "http://localhost:5173",
+    "https://stock-predictor-five-opal.vercel.app",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app$",  # <-- allow all Vercel previews
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=86400,
+)
+
 @app.on_event("startup")
 async def startup_event():
     get_pool()
@@ -61,13 +77,10 @@ async def shutdown_event():
     if pool:
         pool.close()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://stock-predictor-five-opal.vercel.app"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- add a universal preflight handler (helps some hosts/proxies) ---
+@app.options("/{rest_of_path:path}")
+def preflight_ok(rest_of_path: str) -> Response:
+    return Response(status_code=204)
 
 # --- LOAD MODEL ---
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'ml_model', 'stock_predictor.joblib')

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import AuthForm from './components/AuthForm';
+
 import Dashboard from './components/Dashboard';
 
 function App() {

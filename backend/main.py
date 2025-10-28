@@ -260,12 +260,15 @@ def health_db(conn: psycopg.Connection = Depends(get_db_connection)):
     return {"ok": True}
 
 def get_live_info(symbol: str):
-    """Fetch live metrics with robust fallbacks so cards never stay empty."""
+    """Robust live metrics:
+       1) Use 1d/1m intraday to compute current, dayHigh, dayLow (works for most tickers)
+       2) Fill gaps from fast_info/info
+       3) Final fallback: last 5d/1d candle
+    """
     def _clean(v):
         try:
             if v is None:
                 return None
-            # detect NaN from numpy/float
             f = float(v)
             return None if math.isnan(f) else f
         except Exception:
@@ -276,34 +279,45 @@ def get_live_info(symbol: str):
 
         current = day_high = day_low = market_cap = None
 
-        # 1) fast_info (preferred on yfinance>=0.2.40)
+        # 1) Intraday minute data for "today" (most reliable for day range)
         try:
-            fi = getattr(t, "fast_info", None)
-            if fi:
-                current = _clean(getattr(fi, "last_price", None))
-                day_high = _clean(getattr(fi, "day_high", None))
-                day_low  = _clean(getattr(fi, "day_low", None))
-                market_cap = _clean(getattr(fi, "market_cap", None))
+            m1 = t.history(period="1d", interval="1m", auto_adjust=False, prepost=True)
+            if not m1.empty:
+                last = m1.iloc[-1]
+                current = _clean(last.get("Close"))
+                day_high = _clean(m1["High"].max())
+                day_low  = _clean(m1["Low"].min())
         except Exception:
             pass
 
-        # 2) info fallback
+        # 2) fast_info/info for market cap and any missing fields
+        try:
+            fi = getattr(t, "fast_info", None)
+            if fi:
+                market_cap = market_cap or _clean(getattr(fi, "market_cap", None))
+                # sometimes intraday fails; fill from fast_info if needed
+                current = current or _clean(getattr(fi, "last_price", None))
+                day_high = day_high or _clean(getattr(fi, "day_high", None))
+                day_low  = day_low  or _clean(getattr(fi, "day_low", None))
+        except Exception:
+            pass
+
         if any(v is None for v in (current, day_high, day_low, market_cap)):
             try:
                 info = t.info or {}
+                market_cap = market_cap or _clean(info.get("marketCap"))
                 current = current or _clean(info.get("regularMarketPrice") or info.get("currentPrice"))
                 day_high = day_high or _clean(info.get("dayHigh"))
                 day_low  = day_low  or _clean(info.get("dayLow"))
-                market_cap = market_cap or _clean(info.get("marketCap"))
             except Exception:
                 pass
 
-        # 3) final fallback from last daily candle
+        # 3) Final fallback from daily candle (e.g., off-hours or restricted tickers)
         if any(v is None for v in (current, day_high, day_low)):
             try:
-                df = t.history(period="5d", interval="1d", auto_adjust=False)
-                if not df.empty:
-                    last = df.iloc[-1]
+                d1 = t.history(period="5d", interval="1d", auto_adjust=False, prepost=True)
+                if not d1.empty:
+                    last = d1.iloc[-1]
                     current = current or _clean(last.get("Close"))
                     day_high = day_high or _clean(last.get("High"))
                     day_low  = day_low  or _clean(last.get("Low"))

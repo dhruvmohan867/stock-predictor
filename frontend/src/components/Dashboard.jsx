@@ -9,60 +9,59 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "RELIANCE.NS"];
 // --- NEW: Upgraded Logo Component ---
 // This component now tries multiple sources to find a logo, making it far more reliable.
+const SYMBOL_DOMAIN = {
+  AAPL: 'apple.com',
+  MSFT: 'microsoft.com',
+  GOOGL: 'abc.xyz',
+  GOOG: 'abc.xyz',
+  AMZN: 'amazon.com',
+  TSLA: 'tesla.com',
+  NVDA: 'nvidia.com',
+  META: 'meta.com',
+  JNJ: 'jnj.com',
+  MA: 'mastercard.com',
+  F: 'ford.com',
+  'RELIANCE.NS': 'ril.com',
+  RELIANCE: 'ril.com',
+};
+
 const StockLogo = ({ symbol, className }) => {
   const [logoUrl, setLogoUrl] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [triedFallback, setTriedFallback] = useState(false);
 
   useEffect(() => {
-    const findLogo = async () => {
-      setLoading(true);
+    setLoading(true);
+    setTriedFallback(false);
+    if (!symbol) {
       setLogoUrl(null);
-
-      if (!symbol) {
-        setLoading(false);
-        return;
-      }
-
-      // --- STRATEGY 1: Try the direct symbol-based logo provider (fastest) ---
-      const primaryUrl = `https://eodhistoricaldata.com/img/logos/US/${symbol.toUpperCase()}.png`;
-      
-      // --- STRATEGY 2: Use a lookup service to get company info, then use Clearbit ---
-      // This is our powerful fallback.
-      try {
-        // This free API gives us the company's website domain from its stock symbol.
-        const response = await fetch(`https://company.bigpicture.io/v1/companies/find?companyName=${symbol}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data && data.length > 0 && data[0].domain) {
-            // Now use the domain with the Clearbit logo API.
-            const clearbitUrl = `https://logo.clearbit.com/${data[0].domain}`;
-            setLogoUrl(clearbitUrl);
-            setLoading(false);
-            return; // Found a logo, we're done.
-          }
-        }
-      } catch (error) {
-        console.warn(`Could not find domain for ${symbol}, falling back.`);
-      }
-
-      // If the second strategy fails, fall back to the first one.
-      setLogoUrl(primaryUrl);
       setLoading(false);
-    };
-
-    findLogo();
+      return;
+    }
+    // Primary: EOD logos (no key, static CDN)
+    const primaryUrl = `https://eodhistoricaldata.com/img/logos/US/${symbol.toUpperCase()}.png`;
+    setLogoUrl(primaryUrl);
+    setLoading(false);
   }, [symbol]);
 
   const handleError = () => {
-    // This is the final fallback if all strategies fail.
-    setLogoUrl(null);
-    setLoading(false);
+    if (triedFallback) {
+      setLogoUrl(null);
+      return;
+    }
+    // Fallback: Clearbit with known domains only (no 3rd‑party API calls)
+    const domain = SYMBOL_DOMAIN[symbol?.toUpperCase()];
+    if (domain) {
+      setLogoUrl(`https://logo.clearbit.com/${domain}`);
+    } else {
+      setLogoUrl(null);
+    }
+    setTriedFallback(true);
   };
 
   if (loading) {
     return <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`} />;
   }
-
   if (!logoUrl) {
     return (
       <div className={`flex items-center justify-center bg-gray-700 rounded-full ${className}`}>
@@ -70,7 +69,6 @@ const StockLogo = ({ symbol, className }) => {
       </div>
     );
   }
-
   return <img src={logoUrl} alt={`${symbol} logo`} className={className} onError={handleError} />;
 };
 

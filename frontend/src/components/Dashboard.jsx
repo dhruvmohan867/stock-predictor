@@ -75,7 +75,7 @@ const StockLogo = ({ symbol, className }) => {
 };
 
 
-const Dashboard = () => {  // removed onLogout
+const Dashboard = () => {
   const [symbol, setSymbol] = useState('');
   const [activeSymbol, setActiveSymbol] = useState('');
   const [stockData, setStockData] = useState(null);
@@ -86,12 +86,12 @@ const Dashboard = () => {  // removed onLogout
   // simplified apiCall: no Authorization header
   const apiCall = async (endpoint, options = {}) => {
     const headers = { 'Content-Type': 'application/json', ...options.headers };
-    const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || 'Request failed');
+    const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Request failed');
     }
-    return response.json();
+    return res.json();
   };
 
   const executeSearch = async (searchSymbol) => {
@@ -100,9 +100,9 @@ const Dashboard = () => {  // removed onLogout
     setError('');
     setPrediction(null);
     setActiveSymbol(searchSymbol.toUpperCase());
-
     try {
-      const data = await apiCall(`/api/stocks/${searchSymbol.toUpperCase()}`);
+      // Force a backend refresh so history is up-to-date
+      const data = await apiCall(`/api/stocks/${searchSymbol.toUpperCase()}?refresh=1`);
       setStockData(data);
     } catch (err) {
       setError(err.message);
@@ -250,10 +250,35 @@ const Dashboard = () => {  // removed onLogout
               </div>
               
 
+              {/* NEW: show prediction output */}
+              {prediction && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <InfoCard
+                    title="Predicted Next Close"
+                    value={`$${Number(prediction.predicted_next_day_close).toFixed(2)}`}
+                    icon={Activity}
+                    color="yellow"
+                    sub={`vs current $${Number(latestPrice).toFixed(2)}`}
+                  />
+                  <InfoCard
+                    title="Change"
+                    value={`${(prediction.predicted_next_day_close - latestPrice >= 0 ? '▲' : '▼')} $${Math.abs(prediction.predicted_next_day_close - latestPrice).toFixed(2)}`}
+                    icon={TrendingUp}
+                    color={prediction.predicted_next_day_close - latestPrice >= 0 ? 'green' : 'red'}
+                  />
+                  <button
+                    onClick={() => setPrediction(null)}
+                    className="bg-gray-800/50 border border-gray-700 rounded-xl p-6 text-left font-semibold hover:bg-gray-700 transition"
+                  >
+                    Clear Prediction
+                  </button>
+                </div>
+              )}
+
               {!prediction && (
                 <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
-                  <button 
-                    onClick={handlePredict} 
+                  <button
+                    onClick={handlePredict}
                     disabled={loading}
                     className="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
                   >

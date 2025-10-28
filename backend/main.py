@@ -3,17 +3,12 @@ import sys
 import psycopg
 import yfinance as yf
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Depends  # removed: status
-# removed: from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import FastAPI, HTTPException, Depends, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Response
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
-from datetime import datetime, timezone  # removed: timedelta
-# removed Google OAuth imports
-# removed: import secrets
-# removed: import auth
+from datetime import datetime, timezone
 from psycopg_pool import ConnectionPool
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -125,25 +120,18 @@ def fetch_stock_data(symbol):
     try:
         print(f"🔄 Fetching data for {symbol} from Yahoo Finance...")
         ticker = yf.Ticker(symbol)
-        
-        # Fetch historical data
-        history_df = ticker.history(period="1y")
+
+        # Be explicit to avoid provider defaults/caching quirks
+        history_df = ticker.history(period="1y", interval="1d", auto_adjust=False)
         if history_df.empty:
             print(f"⚠️ No historical data found for {symbol}")
             return None, None
 
-        # --- NEW: Fetch live ticker info ---
-        info = ticker.info
-        live_info = {
-            "marketCap": info.get("marketCap"),
-            "dayHigh": info.get("dayHigh"),
-            "dayLow": info.get("dayLow"),
-            "currentPrice": info.get("regularMarketPrice") or info.get("currentPrice"),
-        }
-        
+        # Live fields (fallback-safe)
+        live_info = get_live_info(symbol)
+
         print(f"✅ Data and live info fetched successfully for {symbol}")
         return history_df, live_info
-
     except Exception as e:
         print(f"❌ Error fetching {symbol}: {e}")
         return None, None
@@ -204,41 +192,36 @@ def read_root():
 @app.get("/api/stocks/{search_term}")
 def get_stock_prices(
     search_term: str,
+    refresh: int = Query(0, description="Force refresh from upstream when 1"),
     conn: psycopg.Connection = Depends(get_db_connection),
-):  # removed auth.get_current_user
+):
     data = query_stock_data(search_term, conn)
-    
-    # --- FIX STARTS HERE: A more intelligent stale check ---
+
+    force_refresh = bool(refresh)
     is_stale = False
     if data and data["prices"]:
         latest_db_date = datetime.fromisoformat(data["prices"][0]["date"]).date()
         today = datetime.now(timezone.utc).date()
-        
-        # Check if today is a weekday (Monday=0, Sunday=6)
-        is_weekday = today.weekday() < 5 
-
-        # Data is stale if the latest entry is from before today AND today is a weekday.
-        # This prevents trying to fetch new data on weekends.
+        is_weekday = today.weekday() < 5
         if is_weekday and latest_db_date < today:
             is_stale = True
-            print(f"⚠️ Data for {data['symbol']} is stale (latest: {latest_db_date}). Re-fetching on a trading day...")
-    # --- FIX ENDS HERE ---
+            print(f"⚠️ Stale history for {data['symbol']} (latest: {latest_db_date})")
 
-    # If we have data and it's NOT stale, return it immediately WITH live info.
-    if data and not is_stale:
-        print(f"✓ Found fresh data for {data['symbol']} in DB. Attaching live info...")
+    # If we have data, not forcing and not stale -> return with live info
+    if data and not force_refresh and not is_stale:
         live_info = get_live_info(data["symbol"])
         if live_info:
             data["live_info"] = live_info
         return data
 
-    # If data is missing OR stale, fetch and store history, then attach live info.
+    # Otherwise fetch/refresh history, store, and return with live info
     symbol_to_fetch = data['symbol'] if data else search_term.upper()
-    print(f"🔄 Fetching new/updated data for {symbol_to_fetch} from API...")
+    print(f"🔄 Refreshing history for {symbol_to_fetch} (force={force_refresh} stale={is_stale})")
     new_history_df, live_info = fetch_stock_data(symbol_to_fetch)
     if new_history_df is None:
         if data:
-            print(f"⚠️ API fetch failed, returning stale data for {data['symbol']}.")
+            # Fallback to whatever we have, but attach live if possible
+            data["live_info"] = live_info or get_live_info(symbol_to_fetch)
             return data
         raise HTTPException(status_code=404, detail=f"Could not fetch data for '{search_term}'.")
 
@@ -248,7 +231,6 @@ def get_stock_prices(
     final_data = query_stock_data(symbol_to_fetch, conn)
     if final_data:
         final_data["live_info"] = live_info or get_live_info(symbol_to_fetch)
-    print(f"✓ Successfully cached and returning updated data for {symbol_to_fetch}.")
     return final_data
 
 @app.post("/api/predict")
@@ -306,3 +288,11 @@ def get_live_info(symbol: str):
     except Exception as e:
         print(f"❌ get_live_info failed for {symbol}: {e}")
         return None
+
+# Optional: a live-only endpoint (no DB), handy for debugging UI
+@app.get("/api/live/{symbol}")
+def get_live(symbol: str):
+    live = get_live_info(symbol.upper())
+    if not live:
+        raise HTTPException(status_code=404, detail="Live quote unavailable")
+    return {"symbol": symbol.upper(), "live_info": live}

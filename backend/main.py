@@ -10,6 +10,7 @@ import joblib
 from pydantic import BaseModel
 from datetime import datetime, timezone
 from psycopg_pool import ConnectionPool
+import math
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -260,42 +261,52 @@ def health_db(conn: psycopg.Connection = Depends(get_db_connection)):
 
 def get_live_info(symbol: str):
     """Fetch live metrics with robust fallbacks so cards never stay empty."""
+    def _clean(v):
+        try:
+            if v is None:
+                return None
+            # detect NaN from numpy/float
+            f = float(v)
+            return None if math.isnan(f) else f
+        except Exception:
+            return None
+
     try:
         t = yf.Ticker(symbol)
 
         current = day_high = day_low = market_cap = None
 
-        # 1) Preferred: fast_info (available on yfinance >= 0.2.40)
+        # 1) fast_info (preferred on yfinance>=0.2.40)
         try:
             fi = getattr(t, "fast_info", None)
             if fi:
-                current = getattr(fi, "last_price", None)
-                day_high = getattr(fi, "day_high", None)
-                day_low = getattr(fi, "day_low", None)
-                market_cap = getattr(fi, "market_cap", None)
+                current = _clean(getattr(fi, "last_price", None))
+                day_high = _clean(getattr(fi, "day_high", None))
+                day_low  = _clean(getattr(fi, "day_low", None))
+                market_cap = _clean(getattr(fi, "market_cap", None))
         except Exception:
             pass
 
-        # 2) Fallback: info (can be slow/missing for some tickers)
-        if current is None or day_high is None or day_low is None or market_cap is None:
+        # 2) info fallback
+        if any(v is None for v in (current, day_high, day_low, market_cap)):
             try:
                 info = t.info or {}
-                current = current or info.get("regularMarketPrice") or info.get("currentPrice")
-                day_high = day_high or info.get("dayHigh")
-                day_low = day_low or info.get("dayLow")
-                market_cap = market_cap or info.get("marketCap")
+                current = current or _clean(info.get("regularMarketPrice") or info.get("currentPrice"))
+                day_high = day_high or _clean(info.get("dayHigh"))
+                day_low  = day_low  or _clean(info.get("dayLow"))
+                market_cap = market_cap or _clean(info.get("marketCap"))
             except Exception:
                 pass
 
-        # 3) Final fallback: last trading day from daily history
-        if current is None or day_high is None or day_low is None:
+        # 3) final fallback from last daily candle
+        if any(v is None for v in (current, day_high, day_low)):
             try:
                 df = t.history(period="5d", interval="1d", auto_adjust=False)
                 if not df.empty:
                     last = df.iloc[-1]
-                    current = current or float(last.get("Close"))
-                    day_high = day_high or float(last.get("High"))
-                    day_low = day_low or float(last.get("Low"))
+                    current = current or _clean(last.get("Close"))
+                    day_high = day_high or _clean(last.get("High"))
+                    day_low  = day_low  or _clean(last.get("Low"))
             except Exception:
                 pass
 

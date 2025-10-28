@@ -75,21 +75,20 @@ const StockLogo = ({ symbol, className }) => {
 };
 
 
-const Dashboard = ({ onLogout }) => {
+const Dashboard = () => {  // removed onLogout
   const [symbol, setSymbol] = useState('');
   const [activeSymbol, setActiveSymbol] = useState('');
   const [stockData, setStockData] = useState(null);
   const [prediction, setPrediction] = useState(null);
-  const [loading, setLoading] = useState(true); // Start loading on initial load
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const username = localStorage.getItem('username');
 
+  // simplified apiCall: no Authorization header
   const apiCall = async (endpoint, options = {}) => {
-    const token = localStorage.getItem('token');
-    const headers = { 'Content-Type': 'application/json', ...(token && { 'Authorization': `Bearer ${token}` }), ...options.headers };
+    const headers = { 'Content-Type': 'application/json', ...options.headers };
     const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
     if (!response.ok) {
-      const errorData = await response.json();
+      const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.detail || 'Request failed');
     }
     return response.json();
@@ -162,12 +161,7 @@ const Dashboard = ({ onLogout }) => {
             </div>
             <h1 className="text-xl font-bold">Stock Predictor</h1>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-400 hidden sm:block">Welcome, {username}</span>
-            <button onClick={onLogout} className="flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-red-400 hover:bg-gray-700/50 rounded-lg transition">
-              <LogOut size={20} />
-            </button>
-          </div>
+          {/* removed welcome + logout */}
         </div>
       </header>
     
@@ -227,7 +221,7 @@ const Dashboard = ({ onLogout }) => {
                 </div>
               </div>
 
-              {/* --- MODIFICATION: cards include live stats --- */}
+              
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <InfoCard
                   title="Current Price"
@@ -254,6 +248,7 @@ const Dashboard = ({ onLogout }) => {
                   color="red"
                 />
               </div>
+              
 
               {!prediction && (
                 <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>

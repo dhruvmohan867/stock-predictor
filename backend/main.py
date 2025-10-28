@@ -2,19 +2,18 @@ import os
 import sys
 import psycopg
 import yfinance as yf
-import pandas as pd    
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import OAuth2PasswordRequestForm
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Depends  # removed: status
+# removed: from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Response  # <-- add
+from fastapi import Response
 from dotenv import load_dotenv
 import joblib
 from pydantic import BaseModel
-from datetime import timedelta, datetime, timezone # <-- MODIFICATION: Import datetime and timezone
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
-import secrets
-import auth
+from datetime import datetime, timezone  # removed: timedelta
+# removed Google OAuth imports
+# removed: import secrets
+# removed: import auth
 from psycopg_pool import ConnectionPool
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -92,14 +91,7 @@ except Exception as e:
     print(f"⚠️ Error loading model: {e}")
 
 # --- SCHEMAS ---
-class UserRegister(BaseModel):
-    username: str
-    password: str
-    email: str
-
-class GoogleLoginRequest(BaseModel):
-    credential: str
-
+# removed: UserRegister, GoogleLoginRequest
 class PredictionRequest(BaseModel):
     symbol: str
 
@@ -209,55 +201,11 @@ def store_stock_data(symbol, company_name, df, conn: psycopg.Connection): # <-- 
 def read_root():
     return {"message": "Stock Prediction API is running."}
 
-@app.post("/register")
-def register_user(user: UserRegister, conn: psycopg.Connection = Depends(get_db_connection)):
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM users WHERE username = %s OR email = %s", (user.username, user.email))
-        if cur.fetchone():
-            raise HTTPException(status_code=400, detail="Username or email already registered")
-        hashed_password = auth.get_password_hash(user.password)
-        cur.execute("INSERT INTO users (username, email, hashed_password) VALUES (%s, %s, %s)", (user.username, user.email, hashed_password))
-        conn.commit()
-    return {"message": f"User '{user.username}' registered successfully"}
-
-@app.post("/token")
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), conn: psycopg.Connection = Depends(get_db_connection)):
-    with conn.cursor() as cur:
-        cur.execute("SELECT username, hashed_password FROM users WHERE username = %s", (form_data.username,))
-        user = cur.fetchone()
-    if not user or not auth.verify_password(form_data.password, user[1]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
-    access_token = auth.create_access_token(data={"sub": user[0]}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/google-login")
-def google_login(payload: GoogleLoginRequest, conn: psycopg.Connection = Depends(get_db_connection)):
-    CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-    try:
-        idinfo = google_id_token.verify_oauth2_token(payload.credential, google_requests.Request(), CLIENT_ID)
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
-    email, sub = idinfo.get("email"), idinfo.get("sub")
-    username_base = (idinfo.get("name") or email.split("@")[0]).replace(" ", "_")
-    with conn.cursor() as cur:
-        cur.execute("SELECT username FROM users WHERE email = %s", (email,))
-        row = cur.fetchone()
-        if row:
-            username = row[0]
-        else:
-            username = username_base
-            cur.execute("SELECT 1 FROM users WHERE username = %s", (username,))
-            if cur.fetchone():
-                username = f"{username_base}_{sub[:6]}"
-            random_pwd_hash = auth.get_password_hash(secrets.token_urlsafe(16))
-            cur.execute("INSERT INTO users (username, email, hashed_password, google_id) VALUES (%s, %s, %s, %s) RETURNING username", (username, email, random_pwd_hash, sub))
-            username = cur.fetchone()[0]
-            conn.commit()
-    access_token = auth.create_access_token(data={"sub": username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    return {"access_token": access_token, "token_type": "bearer", "username": username}
-
-@app.get("/api/stocks/{search_term}") # <-- MODIFICATION: Use a generic search_term
-def get_stock_prices(search_term: str, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
+@app.get("/api/stocks/{search_term}")
+def get_stock_prices(
+    search_term: str,
+    conn: psycopg.Connection = Depends(get_db_connection),
+):  # removed auth.get_current_user
     data = query_stock_data(search_term, conn)
     
     # --- FIX STARTS HERE: A more intelligent stale check ---
@@ -304,7 +252,10 @@ def get_stock_prices(search_term: str, conn: psycopg.Connection = Depends(get_db
     return final_data
 
 @app.post("/api/predict")
-def predict_stock_price(request: PredictionRequest, conn: psycopg.Connection = Depends(get_db_connection), current_user: str = Depends(auth.get_current_user)):
+def predict_stock_price(
+    request: PredictionRequest,
+    conn: psycopg.Connection = Depends(get_db_connection),
+):  # removed auth.get_current_user
     if model is None:
         raise HTTPException(status_code=503, detail="ML model not loaded on server")
     data = query_stock_data(request.symbol, conn)
@@ -324,3 +275,34 @@ def health_db(conn: psycopg.Connection = Depends(get_db_connection)):
         cur.execute("SELECT 1")
         cur.fetchone()
     return {"ok": True}
+
+def get_live_info(symbol: str):
+    """Fetch live metrics (current price, day high/low, market cap) without touching history."""
+    try:
+        ticker = yf.Ticker(symbol)
+
+        # Prefer fast_info (faster); fall back to .info safely
+        current = day_high = day_low = market_cap = None
+        try:
+            fi = ticker.fast_info  # may not be available on older yfinance
+            current = getattr(fi, "last_price", None)
+            day_high = getattr(fi, "day_high", None)
+            day_low = getattr(fi, "day_low", None)
+            market_cap = getattr(fi, "market_cap", None)
+        except Exception:
+            pass
+
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+
+        return {
+            "currentPrice": current or info.get("regularMarketPrice") or info.get("currentPrice"),
+            "dayHigh": day_high or info.get("dayHigh"),
+            "dayLow": day_low or info.get("dayLow"),
+            "marketCap": market_cap or info.get("marketCap"),
+        }
+    except Exception as e:
+        print(f"❌ get_live_info failed for {symbol}: {e}")
+        return None

@@ -12,7 +12,7 @@ function App() {
       /> */}
 
       {/* Right Panel: Dashboard (Main App) */}
-      <div className="w-full  flex items-center justify-center p-8">
+      <div className="w-full  flex items-center justify-center ">
         <Dashboard />
       </div>
     </div>

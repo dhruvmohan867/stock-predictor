@@ -259,31 +259,51 @@ def health_db(conn: psycopg.Connection = Depends(get_db_connection)):
     return {"ok": True}
 
 def get_live_info(symbol: str):
-    """Fetch live metrics (current price, day high/low, market cap) without touching history."""
+    """Fetch live metrics with robust fallbacks so cards never stay empty."""
     try:
-        ticker = yf.Ticker(symbol)
+        t = yf.Ticker(symbol)
 
-        # Prefer fast_info (faster); fall back to .info safely
         current = day_high = day_low = market_cap = None
+
+        # 1) Preferred: fast_info (available on yfinance >= 0.2.40)
         try:
-            fi = ticker.fast_info  # may not be available on older yfinance
-            current = getattr(fi, "last_price", None)
-            day_high = getattr(fi, "day_high", None)
-            day_low = getattr(fi, "day_low", None)
-            market_cap = getattr(fi, "market_cap", None)
+            fi = getattr(t, "fast_info", None)
+            if fi:
+                current = getattr(fi, "last_price", None)
+                day_high = getattr(fi, "day_high", None)
+                day_low = getattr(fi, "day_low", None)
+                market_cap = getattr(fi, "market_cap", None)
         except Exception:
             pass
 
-        try:
-            info = ticker.info or {}
-        except Exception:
-            info = {}
+        # 2) Fallback: info (can be slow/missing for some tickers)
+        if current is None or day_high is None or day_low is None or market_cap is None:
+            try:
+                info = t.info or {}
+                current = current or info.get("regularMarketPrice") or info.get("currentPrice")
+                day_high = day_high or info.get("dayHigh")
+                day_low = day_low or info.get("dayLow")
+                market_cap = market_cap or info.get("marketCap")
+            except Exception:
+                pass
+
+        # 3) Final fallback: last trading day from daily history
+        if current is None or day_high is None or day_low is None:
+            try:
+                df = t.history(period="5d", interval="1d", auto_adjust=False)
+                if not df.empty:
+                    last = df.iloc[-1]
+                    current = current or float(last.get("Close"))
+                    day_high = day_high or float(last.get("High"))
+                    day_low = day_low or float(last.get("Low"))
+            except Exception:
+                pass
 
         return {
-            "currentPrice": current or info.get("regularMarketPrice") or info.get("currentPrice"),
-            "dayHigh": day_high or info.get("dayHigh"),
-            "dayLow": day_low or info.get("dayLow"),
-            "marketCap": market_cap or info.get("marketCap"),
+            "currentPrice": current,
+            "dayHigh": day_high,
+            "dayLow": day_low,
+            "marketCap": market_cap,
         }
     except Exception as e:
         print(f"❌ get_live_info failed for {symbol}: {e}")

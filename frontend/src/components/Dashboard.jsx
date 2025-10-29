@@ -7,8 +7,8 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.
 
 // A list of popular stocks for the watchlist feature
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "RELIANCE.NS"];
+
 // --- NEW: Upgraded Logo Component ---
-// This component now tries multiple sources to find a logo, making it far more reliable.
 const SYMBOL_DOMAIN = {
   AAPL: 'apple.com',
   MSFT: 'microsoft.com',
@@ -38,7 +38,6 @@ const StockLogo = ({ symbol, className }) => {
       setLoading(false);
       return;
     }
-    // Primary: EOD logos (no key, static CDN)
     const primaryUrl = `https://eodhistoricaldata.com/img/logos/US/${symbol.toUpperCase()}.png`;
     setLogoUrl(primaryUrl);
     setLoading(false);
@@ -49,7 +48,6 @@ const StockLogo = ({ symbol, className }) => {
       setLogoUrl(null);
       return;
     }
-    // Fallback: Clearbit with known domains only (no 3rd‑party API calls)
     const domain = SYMBOL_DOMAIN[symbol?.toUpperCase()];
     if (domain) {
       setLogoUrl(`https://logo.clearbit.com/${domain}`);
@@ -81,7 +79,6 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // simplified apiCall: no Authorization header
   const apiCall = async (endpoint, options = {}) => {
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
@@ -99,7 +96,6 @@ const Dashboard = () => {
     setPrediction(null);
     setActiveSymbol(searchSymbol.toUpperCase());
     try {
-      // Force a backend refresh so history is up-to-date
       const data = await apiCall(`/api/stocks/${searchSymbol.toUpperCase()}?refresh=1`);
       setStockData(data);
     } catch (err) {
@@ -115,6 +111,28 @@ const Dashboard = () => {
     executeSearch('MSFT'); // Load Microsoft data by default
   }, []);
 
+  // 🔁 Auto-refresh live data every 60 seconds
+  useEffect(() => {
+    if (!activeSymbol) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/live/${activeSymbol}`);
+        if (res.ok) {
+          const json = await res.json();
+          setStockData((prev) => ({
+            ...prev,
+            live_info: json.live_info,
+          }));
+        }
+      } catch (err) {
+        console.warn("Live refresh failed:", err);
+      }
+    }, 60000); // every 60 seconds
+
+    return () => clearInterval(interval);
+  }, [activeSymbol]);
+
   const handlePredict = async () => {
     if (!activeSymbol) return;
     setLoading(true);
@@ -122,6 +140,12 @@ const Dashboard = () => {
     try {
       const data = await apiCall('/api/predict', { method: 'POST', body: JSON.stringify({ symbol: activeSymbol }) });
       setPrediction(data);
+      if (data.live_info) {
+        setStockData((prev) => ({
+          ...prev,
+          live_info: data.live_info,
+        }));
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -134,10 +158,8 @@ const Dashboard = () => {
     price: p.close,
   })) || [];
 
-  // --- MODIFICATION: prefer live current price, fallback to latest close ---
   const latestPrice = stockData?.live_info?.currentPrice ?? stockData?.prices?.[0]?.close ?? 0;
 
-  // Helper to format large numbers (market cap)
   const formatLargeNumber = (num) => {
     if (!num && num !== 0) return '--';
     if (num >= 1_000_000_000_000) return `${(num / 1_000_000_000_000).toFixed(2)}T`;
@@ -159,12 +181,11 @@ const Dashboard = () => {
             </div>
             <h1 className="text-xl font-bold">Stock Predictor</h1>
           </div>
-          {/* removed welcome + logout */}
         </div>
       </header>
     
       <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8 grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* --- Left Sidebar --- */}
+        {/* Sidebar */}
         <aside className="lg:col-span-1 space-y-6">
           <form onSubmit={(e) => { e.preventDefault(); executeSearch(symbol); }} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
             <div className="relative">
@@ -190,7 +211,7 @@ const Dashboard = () => {
           </div>
         </aside>
 
-        {/* --- Main Content --- */}
+        {/* --- Main --- */}
         <main className="lg:col-span-3 relative">
           <AnimatePresence>
             {loading && (
@@ -214,60 +235,22 @@ const Dashboard = () => {
                 <StockLogo symbol={stockData.symbol} className="w-10 h-10 rounded-full bg-gray-700" />
                 <div>
                   <h1 className="text-4xl font-bold">{stockData.symbol}</h1>
-                  {/* optional: show company name if available */}
                   {stockData.company_name && <p className="text-gray-400">{stockData.company_name}</p>}
                 </div>
               </div>
 
-              
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <InfoCard
-                  title="Current Price"
-                  value={latestPrice ? `$${Number(latestPrice).toFixed(2)}` : '--'}
-                  icon={DollarSign}
-                  color="indigo"
-                />
-                <InfoCard
-                  title="Market Cap"
-                  value={formatLargeNumber(stockData?.live_info?.marketCap)}
-                  icon={Briefcase}
-                  color="blue"
-                />
-                <InfoCard
-                  title="Day's High"
-                  value={stockData?.live_info?.dayHigh ? `$${Number(stockData.live_info.dayHigh).toFixed(2)}` : '--'}
-                  icon={ArrowUp}
-                  color="green"
-                />
-                <InfoCard
-                  title="Day's Low"
-                  value={stockData?.live_info?.dayLow ? `$${Number(stockData.live_info.dayLow).toFixed(2)}` : '--'}
-                  icon={ArrowDown}
-                  color="red"
-                />
+                <InfoCard title="Current Price" value={latestPrice ? `$${Number(latestPrice).toFixed(2)}` : '--'} icon={DollarSign} color="indigo" />
+                <InfoCard title="Market Cap" value={formatLargeNumber(stockData?.live_info?.marketCap)} icon={Briefcase} color="blue" />
+                <InfoCard title="Day's High" value={stockData?.live_info?.dayHigh ? `$${Number(stockData.live_info.dayHigh).toFixed(2)}` : '--'} icon={ArrowUp} color="green" />
+                <InfoCard title="Day's Low" value={stockData?.live_info?.dayLow ? `$${Number(stockData.live_info.dayLow).toFixed(2)}` : '--'} icon={ArrowDown} color="red" />
               </div>
-              
 
-              {/* NEW: show prediction output */}
               {prediction && (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <InfoCard
-                    title="Predicted Next Close"
-                    value={`$${Number(prediction.predicted_next_day_close).toFixed(2)}`}
-                    icon={Activity}
-                    color="yellow"
-                    sub={`vs current $${Number(latestPrice).toFixed(2)}`}
-                  />
-                  <InfoCard
-                    title="Change"
-                    value={`${(prediction.predicted_next_day_close - latestPrice >= 0 ? '▲' : '▼')} $${Math.abs(prediction.predicted_next_day_close - latestPrice).toFixed(2)}`}
-                    icon={TrendingUp}
-                    color={prediction.predicted_next_day_close - latestPrice >= 0 ? 'green' : 'red'}
-                  />
-                  <button
-                    onClick={() => setPrediction(null)}
-                    className="bg-gray-800/50 border border-gray-700 rounded-xl p-6 text-left font-semibold hover:bg-gray-700 transition"
-                  >
+                  <InfoCard title="Predicted Next Close" value={`$${Number(prediction.predicted_next_day_close).toFixed(2)}`} icon={Activity} color="yellow" sub={`vs current $${Number(latestPrice).toFixed(2)}`} />
+                  <InfoCard title="Change" value={`${(prediction.predicted_next_day_close - latestPrice >= 0 ? '▲' : '▼')} $${Math.abs(prediction.predicted_next_day_close - latestPrice).toFixed(2)}`} icon={TrendingUp} color={prediction.predicted_next_day_close - latestPrice >= 0 ? 'green' : 'red'} />
+                  <button onClick={() => setPrediction(null)} className="bg-gray-800/50 border border-gray-700 rounded-xl p-6 text-left font-semibold hover:bg-gray-700 transition">
                     Clear Prediction
                   </button>
                 </div>
@@ -275,11 +258,7 @@ const Dashboard = () => {
 
               {!prediction && (
                 <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
-                  <button
-                    onClick={handlePredict}
-                    disabled={loading}
-                    className="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
+                  <button onClick={handlePredict} disabled={loading} className="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition disabled:opacity-50 flex items-center justify-center gap-2">
                     <Activity size={20} /> Predict Next Day
                   </button>
                 </motion.div>
@@ -297,11 +276,7 @@ const Dashboard = () => {
                     <CartesianGrid strokeDasharray="3 3" stroke="#4A5568" />
                     <XAxis dataKey="date" stroke="#A0AEC0" fontSize={12} />
                     <YAxis stroke="#A0AEC0" fontSize={12} domain={['dataMin - 5', 'dataMax + 5']} />
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#1A202C', border: '1px solid #4A5568', color: '#E2E8F0' }}
-                      itemStyle={{ color: '#E2E8F0' }}
-                      labelStyle={{ color: '#A0AEC0' }}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#1A202C', border: '1px solid #4A5568', color: '#E2E8F0' }} itemStyle={{ color: '#E2E8F0' }} labelStyle={{ color: '#A0AEC0' }} />
                     <Area type="monotone" dataKey="price" stroke="#818CF8" fillOpacity={1} fill="url(#colorPrice)" />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -322,7 +297,7 @@ const Dashboard = () => {
   );
 };
 
-// --- NEW: small reusable card component at bottom of file ---
+// --- Reusable InfoCard ---
 const InfoCard = ({ title, value, icon: Icon, color, change, sub }) => (
   <div className="bg-gray-800/50 border border-gray-700 rounded-xl shadow-lg p-6">
     <div className="flex items-center justify-between mb-2">

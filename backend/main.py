@@ -142,12 +142,17 @@ def get_stock(term: str, refresh: int = Query(0), conn: psycopg.Connection = Dep
     data = query_stock_data(term, conn)
     if not data:
         raise HTTPException(status_code=404, detail="Stock not found")
-    if not refresh:
-        live = get_live_info(data["symbol"])
-        if live: data["live_info"] = live
-        return data
-    # Force-refresh historical data
-    os.system(f"python fetch.py")
+    if refresh:
+    # Just update this symbol’s latest price instead of entire fetch.py
+     new_live = get_live_info(term)
+    if new_live:
+        data["live_info"] = new_live
+    else:
+      live = get_live_info(term)
+    if live:
+        data["live_info"] = live
+    return data
+
     new_data = query_stock_data(term, conn)
     if new_data:
         new_data["live_info"] = get_live_info(term)
@@ -163,7 +168,13 @@ def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):
     latest = data["prices"][0]
     df = pd.DataFrame([latest])
     prediction = model.predict(df[["open","high","low","close","volume"]])[0]
-    return {"symbol": req["symbol"], "predicted_next_day_close": float(prediction)}
+    live = get_live_info(req["symbol"])
+    return {
+      "symbol": req["symbol"],
+      "predicted_next_day_close": float(prediction),
+      "live_info": live,
+    }
+
 
 @app.get("/api/live/{symbol}")
 def live(symbol: str):

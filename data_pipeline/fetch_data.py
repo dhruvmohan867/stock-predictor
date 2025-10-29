@@ -3,22 +3,30 @@ import psycopg
 import yfinance as yf
 import pandas as pd
 from dotenv import load_dotenv
-from datetime import datetime
-import time
-import requests  # <-- Already imported, now we'll use it
+from datetime import datetime, timedelta
 from io import StringIO
+import time
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 
 # -------------------------------------------------------------------------
-# 🔐 Load environment variables
+# 🧩 Setup
 # -------------------------------------------------------------------------
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Logging (instead of print → better for production)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 # -------------------------------------------------------------------------
-# 🧱 STEP 1: Ensure database tables exist
+# 🧱 Ensure database tables exist
 # -------------------------------------------------------------------------
 def create_tables_if_not_exist():
-    """Create necessary tables if they don't exist."""
     try:
         with psycopg.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
@@ -30,7 +38,6 @@ def create_tables_if_not_exist():
                         sector VARCHAR(50)
                     )
                 """)
-
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS stock_prices (
                         id SERIAL PRIMARY KEY,
@@ -45,159 +52,146 @@ def create_tables_if_not_exist():
                     )
                 """)
             conn.commit()
-        print("✅ Database tables ready")
+        logging.info("✅ Database tables ready")
         return True
     except Exception as e:
-        print(f"❌ Error setting up tables: {e}")
+        logging.error(f"Error creating tables: {e}")
         return False
 
 # -------------------------------------------------------------------------
-# 🌐 STEP 2: Fetch data from Yahoo Finance
+# 🌐 Fetch S&P 500 company list
 # -------------------------------------------------------------------------
-def fetch_stock_data(symbol):
-    """Fetch 1-year daily historical stock data using Yahoo Finance."""
+def get_sp500_companies():
     try:
-        print(f"🔄 Fetching data for {symbol} from Yahoo Finance...")
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="1y")  # Can be changed to "5y" or "max"
-        if data.empty:
-            print(f"⚠️ No data found for {symbol}")
-            return None
-        print(f"✅ Data fetched successfully for {symbol}")
-        return data
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        html = requests.get(url, headers=headers).text
+        df = pd.read_html(StringIO(html))[0]
+        companies = [
+            {"symbol": row["Symbol"].replace(".", "-"), "name": row["Security"]}
+            for _, row in df.iterrows()
+        ]
+        logging.info(f"✅ Loaded {len(companies)} S&P 500 companies.")
+        return companies
     except Exception as e:
-        print(f"❌ Error fetching {symbol}: {e}")
+        logging.warning(f"Could not fetch S&P 500 list: {e}")
+        return [
+            {"symbol": "AAPL", "name": "Apple"},
+            {"symbol": "MSFT", "name": "Microsoft"},
+            {"symbol": "TSLA", "name": "Tesla"},
+            {"symbol": "GOOGL", "name": "Alphabet"},
+        ]
+
+# -------------------------------------------------------------------------
+# 📅 Incremental fetching helper
+# -------------------------------------------------------------------------
+def get_latest_date(symbol):
+    """Return the latest stored date for the given symbol."""
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM stocks WHERE symbol=%s", (symbol,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                stock_id = row[0]
+                cur.execute("SELECT MAX(date) FROM stock_prices WHERE stock_id=%s", (stock_id,))
+                date_row = cur.fetchone()
+                return date_row[0]
+    except Exception as e:
+        logging.error(f"Error checking latest date for {symbol}: {e}")
         return None
 
 # -------------------------------------------------------------------------
-# 💾 STEP 3: Store stock data into PostgreSQL (safe & stable)
+# 📈 Fetch data from Yahoo Finance
+# -------------------------------------------------------------------------
+def fetch_stock_data(symbol, start_date=None):
+    try:
+        ticker = yf.Ticker(symbol)
+        if start_date:
+            data = ticker.history(start=start_date, end=datetime.today(), interval="1d")
+        else:
+            data = ticker.history(period="1y", interval="1d")
+        if data.empty:
+            logging.warning(f"No data for {symbol}")
+            return None
+        return data
+    except Exception as e:
+        logging.error(f"Error fetching {symbol}: {e}")
+        return None
+
+# -------------------------------------------------------------------------
+# 💾 Store data safely in PostgreSQL
 # -------------------------------------------------------------------------
 def store_stock_data(symbol, company_name, df):
-    """Store fetched data safely in PostgreSQL."""
     if df is None or df.empty:
-        print(f"⚠️ No data to store for {symbol}")
         return
-
     try:
-        # Disable prepared statements (fixes `_pg3_0` issue)
         with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
             with conn.cursor() as cur:
-                # --- MODIFICATION: Insert the full company name ---
-                # Also, update the company name if the symbol already exists.
                 cur.execute("""
                     INSERT INTO stocks (symbol, company_name)
                     VALUES (%s, %s)
                     ON CONFLICT (symbol) DO UPDATE SET company_name = EXCLUDED.company_name
                     RETURNING id
                 """, (symbol, company_name))
-
-                result = cur.fetchone()
-                if result:
-                    stock_id = result[0]
-                else:
-                    cur.execute("SELECT id FROM stocks WHERE symbol = %s", (symbol,))
-                    stock_id = cur.fetchone()[0]
-
-                inserted = 0
-                for date, row in df.iterrows():
-                    cur.execute("""
-                        INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (stock_id, date) DO NOTHING
-                    """, (
+                stock_id = cur.fetchone()[0]
+                # Bulk insert for performance
+                rows = [
+                    (
                         stock_id,
                         date.date(),
-                        float(row["Open"]),
-                        float(row["High"]),
-                        float(row["Low"]),
-                        float(row["Close"]),
-                        int(row["Volume"]) if not pd.isna(row["Volume"]) else 0
-                    ))
-                    inserted += cur.rowcount
-
-                conn.commit()
-                print(f"💾 Stored {inserted} new records for {symbol}")
+                        float(r["Open"]),
+                        float(r["High"]),
+                        float(r["Low"]),
+                        float(r["Close"]),
+                        int(r["Volume"]) if not pd.isna(r["Volume"]) else 0,
+                    )
+                    for date, r in df.iterrows()
+                ]
+                cur.executemany("""
+                    INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (stock_id, date) DO NOTHING
+                """, rows)
+            conn.commit()
+        logging.info(f"💾 Stored {len(df)} records for {symbol}")
     except Exception as e:
-        print(f"❌ Database error for {symbol}: {e}")
+        logging.error(f"Database error for {symbol}: {e}")
 
 # -------------------------------------------------------------------------
-# 🚀 STEP 4: Main execution block to run the pipeline
+# 🚀 Main Execution (threaded)
 # -------------------------------------------------------------------------
-if __name__ == "__main__":
-    print("🚀 Starting Stock Data Fetch Pipeline...\n")
+def process_company(company):
+    symbol = company["symbol"]
+    name = company["name"]
+    latest = get_latest_date(symbol)
+    start_date = None
+    if latest:
+        start_date = latest + timedelta(days=1)
+    df = fetch_stock_data(symbol, start_date)
+    if df is not None and not df.empty:
+        store_stock_data(symbol, name, df)
 
+def main():
+    logging.info("🚀 Starting Stock Data Fetch Pipeline...")
     if not DATABASE_URL:
-        print("❌ Missing DATABASE_URL in .env file")
-        exit(1)
-
+        logging.error("❌ DATABASE_URL missing")
+        return
     if not create_tables_if_not_exist():
-        print("❌ Database setup failed. Exiting.")
-        exit(1)
+        logging.error("❌ Database setup failed")
+        return
 
-    try:
-        # --- Get the full list of S&P 500 symbols ---
-       
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        sp500_df = pd.read_html(StringIO(response.text))[0]
-        
-        # --- FIX: Remove the 'regex' argument from the string replace method ---
-        all_companies = [
-            {'symbol': row['Symbol'].replace('.', '-'), 'name': row['Security']}
-            for _, row in sp500_df.iterrows()
-        ]
-        print(f"✅ Found {len(all_companies)} total companies in S&P 500.")
-        print(f"\n➡️ Total companies to process: {len(all_companies)}")
+    companies = get_sp500_companies()
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(process_company, c) for c in companies]
+        for i, f in enumerate(as_completed(futures), start=1):
+            try:
+                f.result()
+                logging.info(f"✅ ({i}/{len(companies)}) Done")
+            except Exception as e:
+                logging.error(f"Thread error: {e}")
+    logging.info("🎯 All stock data updated successfully!")
 
-    except Exception as e:
-        print(f"Could not fetch S&P 500 list, using a default list. Error: {e}")
-        all_companies = [
-            {'symbol': "MSFT", 'name': "Microsoft"}, {'symbol': "AAPL", 'name': "Apple"},
-            {'symbol': "GOOGL", 'name': "Alphabet"}, {'symbol': "AMZN", 'name': "Amazon"},
-            {'symbol': "TSLA", 'name': "Tesla"}, {'symbol': "NVDA", 'name': "NVIDIA"},
-            {'symbol': "JNJ", 'name': "Johnson & Johnson"}, {'symbol': "MA", 'name': "Mastercard"},
-            {'symbol': "META", 'name': "Meta Platforms"}, {'symbol': "F", 'name': "Ford Motor"},
-            {'symbol': "RELIANCE.NS", 'name': "Reliance Industries"} # Example
-        ]
-
-    # --- Check for already processed symbols to allow resuming ---
-    try:
-        with psycopg.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT symbol FROM stocks")
-                processed_symbols = {row[0] for row in cur.fetchall()}
-        print(f"Found {len(processed_symbols)} symbols already in the database.")
-        
-        # --- FIX: Temporarily disable the resume feature to force an update ---
-        # We will process ALL companies to ensure their names are updated.
-        companies_to_fetch = all_companies
-        # companies_to_fetch = [c for c in all_companies if c['symbol'] not in processed_symbols] # <-- This line is temporarily disabled
-        
-        if not companies_to_fetch:
-            print("\n✅ All S&P 500 stocks are already up-to-date in the database. Nothing to do.")
-            exit(0)
-            
-        print(f"➡️ {len(companies_to_fetch)} new companies to fetch.")
-
-    except Exception as e:
-        print(f"⚠️ Could not check for existing symbols, will attempt to fetch all. Error: {e}")
-        companies_to_fetch = all_companies
-    # --- END MODIFICATION ---
-
-    for i, company in enumerate(companies_to_fetch, start=1):
-        symbol = company['symbol']
-        name = company['name']
-        print(f"\n--- ({i}/{len(companies_to_fetch)}) Processing {symbol} ({name}) ---")
-        data = fetch_stock_data(symbol)
-        store_stock_data(symbol, name, data) # <-- MODIFICATION: Pass name to store function
-        # --- CRUCIAL: Wait for 1 second to avoid being rate-limited ---
-        print("--- Waiting 1 second ---")
-        time.sleep(1)
-
-    print("\n✅ All data fetched and stored successfully!")
-
-
+if __name__ == "__main__":
+    main()

@@ -96,7 +96,8 @@ const Dashboard = () => {
     setPrediction(null);
     setActiveSymbol(searchSymbol.toUpperCase());
     try {
-      const data = await apiCall(`/api/stocks/${searchSymbol.toUpperCase()}?refresh=1`);
+      // remove the forced slow refresh
+      const data = await apiCall(`/api/stocks/${searchSymbol.toUpperCase()}`);
       setStockData(data);
     } catch (err) {
       setError(err.message);
@@ -158,7 +159,11 @@ const Dashboard = () => {
     price: p.close,
   })) || [];
 
-  const latestPrice = stockData?.live_info?.currentPrice ?? stockData?.prices?.[0]?.close ?? 0;
+  // prefer live; fallback to latest daily candle
+  const lastDaily = stockData?.prices?.[0] || null;
+  const latestPrice = stockData?.live_info?.currentPrice ?? lastDaily?.close ?? 0;
+  const dayHighUI = stockData?.live_info?.dayHigh ?? lastDaily?.high ?? null;
+  const dayLowUI  = stockData?.live_info?.dayLow  ?? lastDaily?.low  ?? null;
 
   const formatLargeNumber = (num) => {
     if (!num && num !== 0) return '--';
@@ -242,8 +247,8 @@ const Dashboard = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <InfoCard title="Current Price" value={latestPrice ? `$${Number(latestPrice).toFixed(2)}` : '--'} icon={DollarSign} color="indigo" />
                 <InfoCard title="Market Cap" value={formatLargeNumber(stockData?.live_info?.marketCap)} icon={Briefcase} color="blue" />
-                <InfoCard title="Day's High" value={stockData?.live_info?.dayHigh ? `$${Number(stockData.live_info.dayHigh).toFixed(2)}` : '--'} icon={ArrowUp} color="green" />
-                <InfoCard title="Day's Low" value={stockData?.live_info?.dayLow ? `$${Number(stockData.live_info.dayLow).toFixed(2)}` : '--'} icon={ArrowDown} color="red" />
+                <InfoCard title="Day's High" value={dayHighUI != null ? `$${Number(dayHighUI).toFixed(2)}` : '--'} icon={ArrowUp} color="green" />
+                <InfoCard title="Day's Low" value={dayLowUI  != null ? `$${Number(dayLowUI).toFixed(2)}`  : '--'} icon={ArrowDown} color="red" />
               </div>
 
               {prediction && (

@@ -2,15 +2,15 @@ import os
 import sys
 import psycopg
 import yfinance as yf
-import pandas as pd
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
-from datetime import datetime, timezone
 from psycopg_pool import ConnectionPool
+import pandas as pd
 import math
-from fastapi_utils.tasks import repeat_every
+import time
 
 load_dotenv()
 
@@ -59,16 +59,19 @@ app.add_middleware(
 # --------------------------------------------------------------------
 # 📦 Simple In-Memory Cache for Live Data
 # --------------------------------------------------------------------
-live_cache = {}  # {symbol: {"data": ..., "timestamp": datetime}}
+# replace old cache with TTL-based
+LIVE_TTL_SEC = 30
+_live_cache = {}  # {symbol: (ts, data)}
 
-def get_cached(symbol, max_age_seconds=300):
-    cached = live_cache.get(symbol)
-    if cached and (datetime.now() - cached["timestamp"]).total_seconds() < max_age_seconds:
-        return cached["data"]
-    return None
+def _get_cached(symbol: str):
+    hit = _live_cache.get(symbol.upper())
+    if not hit:
+        return None
+    ts, data = hit
+    return data if (time.time() - ts) < LIVE_TTL_SEC else None
 
-def set_cached(symbol, data):
-    live_cache[symbol] = {"data": data, "timestamp": datetime.now()}
+def _set_cached(symbol: str, data: dict):
+    _live_cache[symbol.upper()] = (time.time(), data)
 
 # --------------------------------------------------------------------
 # 🧠 Model Loading
@@ -102,61 +105,200 @@ def query_stock_data(search_term, conn: psycopg.Connection):
                 "prices": [{"date": r[0].isoformat(),"open": float(r[1]),"high": float(r[2]),"low": float(r[3]),"close": float(r[4]),"volume": int(r[5])} for r in rows]}
 
 def get_live_info(symbol: str):
-    cached = get_cached(symbol)
-    if cached: return cached
+    """Intraday-first live metrics with safe fallbacks + short TTL cache."""
+    sym = symbol.upper()
+    cached = _get_cached(sym)
+    if cached:
+        return cached
+
+    def clean(v):
+        try:
+            if v is None:
+                return None
+            f = float(v)
+            return None if math.isnan(f) else f
+        except Exception:
+            return None
+
+    current = day_high = day_low = market_cap = prev_close = None
     try:
-        t = yf.Ticker(symbol)
-        m1 = t.history(period="1d", interval="1m", prepost=True)
-        if not m1.empty:
-            last = m1.iloc[-1]
-            data = {
-                "currentPrice": float(last["Close"]),
-                "dayHigh": float(m1["High"].max()),
-                "dayLow": float(m1["Low"].min()),
-                "marketCap": getattr(t.fast_info, "market_cap", None),
-            }
-            set_cached(symbol, data)
-            return data
-    except Exception:
-        pass
-    return None
+        t = yf.Ticker(sym)
 
-# --------------------------------------------------------------------
-# 🧠 Background Daily Refresh (auto runs every 24h)
-# --------------------------------------------------------------------
-@app.on_event("startup")
-@repeat_every(seconds=86400)  # every 24h
-def background_refresh():
-    print("🔄 Daily background refresh started...")
-    os.system("python fetch.py")  # Runs your fetch.py daily
-    print("✅ Background refresh complete.")
+        # 1) Intraday 1m — works for most tickers and gives today's range fast
+        try:
+            m1 = t.history(period="1d", interval="1m", auto_adjust=False, prepost=True)
+            if not m1.empty:
+                last = m1.iloc[-1]
+                current = clean(last.get("Close"))
+                day_high = clean(m1["High"].max())
+                day_low = clean(m1["Low"].min())
+        except Exception:
+            pass
 
-# --------------------------------------------------------------------
-# 🌐 ROUTES
-# --------------------------------------------------------------------
-@app.get("/")
-def root(): return {"message": "Stock Prediction API Running"}
+        # 2) fast_info — fill any gaps + market cap
+        try:
+            fi = getattr(t, "fast_info", None)
+            if fi:
+                market_cap = market_cap or clean(getattr(fi, "market_cap", None))
+                prev_close = prev_close or clean(getattr(fi, "previous_close", None))
+                current = current or clean(getattr(fi, "last_price", None))
+                day_high = day_high or clean(getattr(fi, "day_high", None))
+                day_low = day_low or clean(getattr(fi, "day_low", None))
+        except Exception:
+            pass
 
+        # 3) info — more fallbacks (also read sharesOutstanding)
+        shares_out = None
+        try:
+            info = t.info or {}
+            shares_out = info.get("sharesOutstanding") or info.get("floatShares")
+            market_cap = market_cap or clean(info.get("marketCap"))
+            prev_close = prev_close or clean(info.get("previousClose"))
+            current = current or clean(info.get("regularMarketPrice") or info.get("currentPrice"))
+            day_high = day_high or clean(info.get("dayHigh"))
+            day_low = day_low or clean(info.get("dayLow"))
+        except Exception:
+            pass
+
+        # 4) final daily fallback (off-hours or restricted tickers)
+        if any(v is None for v in (current, day_high, day_low, prev_close)):
+            try:
+                d1 = t.history(period="5d", interval="1d", auto_adjust=False, prepost=True)
+                if not d1.empty:
+                    last = d1.iloc[-1]
+                    prev = d1.iloc[-2] if len(d1) > 1 else None
+                    current = current or clean(last.get("Close"))
+                    day_high = day_high or clean(last.get("High"))
+                    day_low = day_low or clean(last.get("Low"))
+                    prev_close = prev_close or clean((prev or last).get("Close"))
+            except Exception:
+                pass
+
+        # Compute market cap if still missing
+        if market_cap is None and shares_out and current is not None:
+            try:
+                market_cap = float(shares_out) * float(current)
+            except Exception:
+                pass
+
+        data = {
+            "currentPrice": current,
+            "dayHigh": day_high,
+            "dayLow": day_low,
+            "marketCap": market_cap,
+            "previousClose": prev_close,
+        }
+        _set_cached(sym, data)
+        return data
+    except Exception as e:
+        print(f"❌ get_live_info failed for {sym}: {e}")
+        return None
+
+# --- NEW: incremental helpers (adapted from data_pipeline/fetch_data.py) ---
+
+def _get_stock_id(symbol: str, conn: psycopg.Connection) -> int | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM stocks WHERE symbol=%s", (symbol,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+def _get_latest_date(symbol: str, conn: psycopg.Connection):
+    stock_id = _get_stock_id(symbol, conn)
+    if stock_id is None:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(date) FROM stock_prices WHERE stock_id=%s", (stock_id,))
+        r = cur.fetchone()
+        return r[0]
+
+def _fetch_history(symbol: str, start_date=None):
+    t = yf.Ticker(symbol)
+    if start_date:
+        return t.history(start=start_date, end=datetime.now(), interval="1d")
+    return t.history(period="1y", interval="1d")
+
+def _store_history(symbol: str, company_name: str, df: pd.DataFrame, conn: psycopg.Connection):
+    if df is None or df.empty:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO stocks (symbol, company_name)
+            VALUES (%s, %s)
+            ON CONFLICT (symbol) DO UPDATE SET company_name=EXCLUDED.company_name
+            RETURNING id
+        """, (symbol, company_name))
+        stock_id = cur.fetchone()[0]
+        rows = []
+        for date, row in df.iterrows():
+            rows.append((
+                stock_id,
+                date.date(),
+                float(row["Open"]),
+                float(row["High"]),
+                float(row["Low"]),
+                float(row["Close"]),
+                int(row["Volume"]) if not pd.isna(row["Volume"]) else 0
+            ))
+        cur.executemany("""
+            INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (stock_id, date) DO NOTHING
+        """, rows)
+    conn.commit()
+
+def refresh_symbol(symbol: str, conn: psycopg.Connection):
+    symbol = symbol.upper()
+    latest = _get_latest_date(symbol, conn)
+    start = None
+    if latest:
+        start = latest + timedelta(days=1)
+        if start > datetime.now().date():
+            return False  # already up-to-date
+    df = _fetch_history(symbol, start)
+    if df is None or df.empty:
+        return False
+    _store_history(symbol, symbol, df, conn)
+    return True
+
+# --- REMOVE old background refresh ---
+# Delete the @app.on_event("startup") block
+
+# --- NEW: secure internal batch refresh endpoint ---
+REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
+
+@app.post("/internal/refresh")
+def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):
+    if secret != REFRESH_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    symbols = payload.get("symbols") or []
+    if not isinstance(symbols, list) or not symbols:
+        raise HTTPException(status_code=400, detail="symbols list required")
+    updated = []
+    for s in symbols:
+        try:
+            if refresh_symbol(s, conn):
+                updated.append(s.upper())
+        except Exception as e:
+            print(f"Refresh error {s}: {e}")
+    return {"updated": updated, "count": len(updated)}
+
+# --- FIX refresh parameter logic in /api/stocks/{term} (indentation + flow) ---
 @app.get("/api/stocks/{term}")
 def get_stock(term: str, refresh: int = Query(0), conn: psycopg.Connection = Depends(get_db_connection)):
     data = query_stock_data(term, conn)
     if not data:
         raise HTTPException(status_code=404, detail="Stock not found")
+
     if refresh:
-    # Just update this symbol’s latest price instead of entire fetch.py
-     new_live = get_live_info(term)
-    if new_live:
-        data["live_info"] = new_live
-    else:
-      live = get_live_info(term)
+        # Refresh only this symbol (incremental)
+        refresh_symbol(data["symbol"], conn)
+        data = query_stock_data(term, conn)
+
+    # Attach live info
+    live = get_live_info(data["symbol"])
     if live:
         data["live_info"] = live
     return data
-
-    new_data = query_stock_data(term, conn)
-    if new_data:
-        new_data["live_info"] = get_live_info(term)
-    return new_data
 
 @app.post("/api/predict")
 def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):

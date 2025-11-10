@@ -265,7 +265,9 @@ def refresh_symbol(symbol: str, conn: psycopg.Connection):
 
 # --- NEW: secure internal batch refresh endpoint ---
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
-
+@app.get("/", include_in_schema=False)
+def root():
+    return {"ok": True, "service": "stock-predictor"}
 @app.post("/internal/refresh")
 def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):
     if secret != REFRESH_SECRET:
@@ -324,6 +326,12 @@ def live(symbol: str):
     if not info:
         raise HTTPException(status_code=404, detail="No live data")
     return {"symbol": symbol.upper(), "live_info": info}
+
+@app.get("/api/symbols")
+def list_symbols(conn: psycopg.Connection = Depends(get_db_connection)):
+    with conn.cursor() as cur:
+        cur.execute("SELECT symbol FROM stocks ORDER BY symbol")
+        return [r[0] for r in cur.fetchall()]
 
 @app.get("/health/db")
 def health(conn: psycopg.Connection = Depends(get_db_connection)):

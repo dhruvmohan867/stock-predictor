@@ -213,9 +213,20 @@ def _get_latest_date(symbol: str, conn: psycopg.Connection):
 
 def _fetch_history(symbol: str, start_date=None):
     t = yf.Ticker(symbol)
-    if start_date:
-        return t.history(start=start_date, end=datetime.now(), interval="1d")
-    return t.history(period="1y", interval="1d")
+    try:
+        if start_date:
+            df = t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d")
+        else:
+            df = t.history(period="2y", interval="1d")
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        # fallback attempt
+        try:
+            df = t.history(period="1y", interval="1d")
+        except Exception:
+            df = None
+    return df
 
 def _store_history(symbol: str, company_name: str, df: pd.DataFrame, conn: psycopg.Connection):
     if df is None or df.empty:
@@ -248,17 +259,23 @@ def _store_history(symbol: str, company_name: str, df: pd.DataFrame, conn: psyco
 
 def refresh_symbol(symbol: str, conn: psycopg.Connection):
     symbol = symbol.upper()
-    latest = _get_latest_date(symbol, conn)
+    latest_before = _get_latest_date(symbol, conn)
     start = None
-    if latest:
-        start = latest + timedelta(days=1)
-        if start > datetime.now().date():
-            return False  # already up-to-date
+    today = datetime.now(timezone.utc).date()
+    if latest_before:
+        start = latest_before + timedelta(days=1)
+        if start > today:
+            return {"updated": False, "reason": "up_to_date", "latest": str(latest_before)}
     df = _fetch_history(symbol, start)
     if df is None or df.empty:
-        return False
+        # fallback try if partial fetch was empty
+        df = _fetch_history(symbol, None)
+        if df is None or df.empty:
+            return {"updated": False, "reason": "no_data_from_yfinance", "latest": str(latest_before) if latest_before else None}
     _store_history(symbol, symbol, df, conn)
-    return True
+    latest_after = _get_latest_date(symbol, conn)
+    updated = bool(latest_after and (latest_before is None or latest_after > latest_before))
+    return {"updated": updated, "reason": "ok" if updated else "no_new_rows", "latest": str(latest_after)}
 
 # --- REMOVE old background refresh ---
 # Delete the @app.on_event("startup") block
@@ -275,14 +292,17 @@ def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Con
     symbols = payload.get("symbols") or []
     if not isinstance(symbols, list) or not symbols:
         raise HTTPException(status_code=400, detail="symbols list required")
+    results = {}
     updated = []
     for s in symbols:
         try:
-            if refresh_symbol(s, conn):
+            res = refresh_symbol(s, conn)
+            results[s.upper()] = res
+            if res.get("updated"):
                 updated.append(s.upper())
         except Exception as e:
-            print(f"Refresh error {s}: {e}")
-    return {"updated": updated, "count": len(updated)}
+            results[s.upper()] = {"updated": False, "reason": f"error:{e}"}
+    return {"updated": updated, "count": len(updated), "results": results}
 
 @app.get("/internal/stale")
 def stale_symbols(secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):

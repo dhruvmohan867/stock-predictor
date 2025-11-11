@@ -12,6 +12,7 @@ import pandas as pd
 import math
 import time
 import threading
+import requests
 
 load_dotenv()
 
@@ -58,7 +59,44 @@ app.add_middleware(
 )
 
 # --------------------------------------------------------------------
-# 📦 Simple In-Memory Cache for Live Data (make TTL configurable)
+# 🕒 Yahoo Finance shared session + rate limiting / backoff
+# --------------------------------------------------------------------
+RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "0.5"))  # min seconds between calls
+_YF_LOCK = threading.Lock()
+_last_call_ts = 0.0
+
+def _rate_limit_wait():
+    """Ensure at least RATE_LIMIT_SEC spacing between Yahoo calls (per process)."""
+    global _last_call_ts
+    with _YF_LOCK:
+        now = time.time()
+        delay = _last_call_ts + RATE_LIMIT_SEC - now
+        if delay > 0:
+            time.sleep(delay)
+        _last_call_ts = time.time()
+
+def _with_backoff(fn, retries=3, base=0.75):
+    """Run fn with exponential backoff on exception (handles 429 / transient errors)."""
+    for i in range(retries):
+        try:
+            _rate_limit_wait()
+            return fn()
+        except Exception:
+            if i == retries - 1:
+                return None
+            time.sleep(base * (2 ** i))
+
+_YF_SESSION = requests.Session()
+_YF_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+})
+
+def _yf_ticker(sym: str):
+    """Create a yfinance Ticker bound to the shared session."""
+    return yf.Ticker(sym, session=_YF_SESSION)
+
+# --------------------------------------------------------------------
+# 📦 Simple In-Memory Cache for Live Data
 # --------------------------------------------------------------------
 LIVE_TTL_SEC = int(os.getenv("LIVE_TTL_SEC", "60"))  # was 30
 
@@ -132,7 +170,7 @@ def get_live_info(symbol: str):
 
     current = day_high = day_low = market_cap = prev_close = None
     try:
-        t = yf.Ticker(sym)
+        t = _yf_ticker(sym)
 
         # 1) Intraday 1m
         try:
@@ -159,16 +197,7 @@ def get_live_info(symbol: str):
 
         # 3) info (call only if still missing)
         if any(v is None for v in (current, day_high, day_low, prev_close, market_cap)):
-            try:
-                info = _with_backoff(lambda: t.info) or {}
-                shares_out = info.get("sharesOutstanding") or info.get("floatShares")
-                market_cap = market_cap or clean(info.get("marketCap"))
-                prev_close = prev_close or clean(info.get("previousClose"))
-                current = current or clean(info.get("regularMarketPrice") or info.get("currentPrice"))
-                day_high = day_high or clean(info.get("dayHigh"))
-                day_low = day_low or clean(info.get("dayLow"))
-            except Exception:
-                shares_out = None
+            info = _with_backoff(lambda: t.info) or {}
         else:
             shares_out = None
 
@@ -224,7 +253,7 @@ def _get_latest_date(symbol: str, conn: psycopg.Connection):
         return r[0]
 
 def _fetch_history(symbol: str, start_date=None):
-    t = yf.Ticker(symbol)
+    t = _yf_ticker(symbol)
     try:
         if start_date:
             df = _with_backoff(lambda: t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d"))

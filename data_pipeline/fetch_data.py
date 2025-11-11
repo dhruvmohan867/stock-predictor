@@ -131,9 +131,14 @@ def get_latest_date(symbol):
 # -------------------------------------------------------------------------
 # 📈 Fetch data from Yahoo Finance
 # -------------------------------------------------------------------------
+_YF_SESSION = requests.Session()
+_YF_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+})
+
 def fetch_stock_data(symbol, start_date=None):
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol, session=_YF_SESSION)
         if start_date:
             data = _with_backoff(lambda: ticker.history(start=start_date, end=datetime.today(), interval="1d"))
         else:

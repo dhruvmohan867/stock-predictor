@@ -20,7 +20,7 @@ load_dotenv()
 pool = None
 
 def _normalize_dsn(dsn: str) -> str:
-    if "supabase.co" in dsn and "sslmode=" not in dsn:
+    if ("supabase.co" in dsn or "supabase.com" in dsn) and "sslmode=" not in dsn:
         return f"{dsn}{'?' if '?' not in dsn else '&'}sslmode=require"
     return dsn
 
@@ -92,7 +92,7 @@ def query_stock_data(search_term, conn: psycopg.Connection):
         cur.execute("""
             SELECT id, symbol, company_name
             FROM stocks WHERE symbol ILIKE %s OR company_name ILIKE %s
-        """, (f"{search_term.upper()}", f"%{search_term}%"))
+        """, (f"%{search_term}%", f"%{search_term}%"))
         stock = cur.fetchone()
         if not stock: return None
         stock_id, symbol, name = stock

@@ -4,6 +4,9 @@ export default {
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
+  safelist: [
+    { pattern: /text-(indigo|blue|green|red|yellow)-400/ },
+  ],
   theme: {
     extend: {},
   },

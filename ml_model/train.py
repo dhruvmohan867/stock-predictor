@@ -73,5 +73,12 @@ def train_and_save_model():
     joblib.dump(model, model_path)
     print(f"Model saved successfully to {model_path}")
 
+    # Copy to backend/ml_model so the API uses the latest model
+    backend_model_dir = os.path.join(os.path.dirname(__file__), '..', 'backend', 'ml_model')
+    os.makedirs(backend_model_dir, exist_ok=True)
+    backend_model_path = os.path.join(backend_model_dir, 'stock_predictor.joblib')
+    joblib.dump(model, backend_model_path)
+    print(f"Model copied to {backend_model_path}")
+
 if __name__ == "__main__":
     train_and_save_model()

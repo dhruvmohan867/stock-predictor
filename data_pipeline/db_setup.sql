@@ -13,7 +13,8 @@ CREATE TABLE stock_prices (
     high NUMERIC,
     low NUMERIC,
     close NUMERIC,
-    volume BIGINT
+    volume BIGINT,
+    UNIQUE (stock_id, date)
 );
 
 CREATE TABLE users (

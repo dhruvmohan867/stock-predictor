@@ -169,12 +169,20 @@ def query_stock_data(search_term, conn: psycopg.Connection):
                 "prices": [{"date": r[0].isoformat(),"open": float(r[1]),"high": float(r[2]),"low": float(r[3]),"close": float(r[4]),"volume": int(r[5])} for r in rows]}
 
 def get_live_info(symbol: str):
-    """Intraday-first live metrics with safe fallbacks + short TTL cache."""
+    """Provider-agnostic live metrics with cache + fallbacks."""
     sym = symbol.upper()
     cached = _get_cached(sym)
     if cached:
         return cached
 
+    # 1) Try Alpha Vantage if selected or in auto mode with key present
+    if LIVE_PROVIDER in ("alpha", "auto"):
+        av = _alpha_live(sym)
+        if av and any(av.get(k) is not None for k in ("currentPrice","dayHigh","dayLow","previousClose")):
+            _set_cached(sym, av)
+            return av
+
+    # 2) Fallback to Yahoo (existing logic)
     def clean(v):
         try:
             if v is None:
@@ -241,6 +249,7 @@ def get_live_info(symbol: str):
             "dayLow": day_low,
             "marketCap": market_cap,
             "previousClose": prev_close,
+            "source": "yahoo"
         }
         _set_cached(sym, data)
         return data
@@ -580,3 +589,58 @@ def health(conn: psycopg.Connection = Depends(get_db_connection)):
     with conn.cursor() as c:
         c.execute("SELECT 1")
     return {"ok": True}
+
+# --------------------------------------------------------------------
+# 🔌 Alpha Vantage client (live data alternative to Yahoo)
+# --------------------------------------------------------------------
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
+LIVE_PROVIDER = os.getenv("LIVE_PROVIDER", "auto")  # alpha | yahoo | auto
+AV_RATE_LIMIT_SEC = float(os.getenv("AV_RATE_LIMIT_SEC", "12"))  # ~5 req/min free tier
+
+_AV_SESSION = requests.Session()
+_AV_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+})
+_AV_LOCK = threading.Lock()
+_av_last_call = 0.0
+
+def _av_wait():
+    global _av_last_call
+    with _AV_LOCK:
+        now = time.time()
+        delay = _av_last_call + AV_RATE_LIMIT_SEC - now
+        if delay > 0:
+            time.sleep(delay)
+        _av_last_call = time.time()
+
+def _alpha_live(symbol: str) -> dict | None:
+    """Use Alpha Vantage GLOBAL_QUOTE for live price/high/low/prevClose."""
+    if not ALPHA_VANTAGE_API_KEY:
+        return None
+    try:
+        _av_wait()
+        r = _AV_SESSION.get(
+            "https://www.alphavantage.co/query",
+            params={"function": "GLOBAL_QUOTE", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY},
+            timeout=20,
+        )
+        j = r.json()
+        q = j.get("Global Quote") or {}
+        if not q:
+            return None
+        def f(k):
+            v = q.get(k)
+            try:
+                return None if v in (None, "", "None") else float(v)
+            except Exception:
+                return None
+        return {
+            "currentPrice": f("05. price"),
+            "dayHigh":      f("03. high"),
+            "dayLow":       f("04. low"),
+            "previousClose":f("08. previous close"),
+            "marketCap":    None,  # can be fetched via OVERVIEW if needed (extra call)
+            "source":       "alpha_vantage"
+        }
+    except Exception:
+        return None

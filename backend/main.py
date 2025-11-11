@@ -284,6 +284,28 @@ def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Con
             print(f"Refresh error {s}: {e}")
     return {"updated": updated, "count": len(updated)}
 
+@app.get("/internal/stale")
+def stale_symbols(secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):
+    if secret != REFRESH_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    today = datetime.now().date()
+    with conn.cursor() as cur:
+        # Symbols whose latest stored date < today
+        cur.execute("""
+            SELECT s.symbol
+            FROM stocks s
+            LEFT JOIN LATERAL (
+              SELECT MAX(date) AS max_date
+              FROM stock_prices sp
+              WHERE sp.stock_id = s.id
+            ) m ON TRUE
+            WHERE COALESCE(m.max_date, '1970-01-01') < %s
+            ORDER BY s.symbol
+            LIMIT 500
+        """, (today,))
+        rows = cur.fetchall()
+    return [r[0] for r in rows]
+
 # --- FIX refresh parameter logic in /api/stocks/{term} (indentation + flow) ---
 @app.get("/api/stocks/{term}")
 def get_stock(term: str, refresh: int = Query(0), conn: psycopg.Connection = Depends(get_db_connection)):

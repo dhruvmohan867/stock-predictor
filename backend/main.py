@@ -405,15 +405,23 @@ def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Con
     
     for s in symbols:
         try:
+            print(f"🔄 Starting refresh for {s}...")  # ✅ ADD THIS
             res = refresh_symbol(s, conn)
+            print(f"📊 Result for {s}: {res}")  # ✅ ADD THIS
             results[s.upper()] = res
             if res.get("updated"):
                 updated.append(s.upper())
             else:
                 failed.append(s.upper())
         except Exception as e:
-            print(f"❌ Exception refreshing {s}: {e}")
-            results[s.upper()] = {"updated": False, "reason": f"error:{str(e)[:100]}"}
+            import traceback  # ✅ ADD THIS
+            error_details = traceback.format_exc()  # ✅ ADD THIS
+            print(f"❌ Exception for {s}:\n{error_details}")  # ✅ ADD THIS
+            results[s.upper()] = {
+                "updated": False,
+                "reason": f"error:{str(e)[:200]}",  # ✅ CHANGED: Capture more details
+                "traceback": error_details[:500]  # ✅ ADD THIS
+            }
             failed.append(s.upper())
     
     return {

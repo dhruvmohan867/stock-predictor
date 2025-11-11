@@ -13,6 +13,7 @@ import math
 import time
 import threading
 import requests
+import random
 
 load_dotenv()
 
@@ -59,14 +60,34 @@ app.add_middleware(
 )
 
 # --------------------------------------------------------------------
-# 🕒 Yahoo Finance shared session + rate limiting / backoff
+# 🕒 Yahoo Finance - Multiple Sessions with Rotation
 # --------------------------------------------------------------------
-RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "0.5"))  # min seconds between calls
+RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "1.0"))  # Increased to 1 second
 _YF_LOCK = threading.Lock()
 _last_call_ts = 0.0
 
+# ✅ NEW: Create multiple sessions to rotate through
+_YF_SESSIONS = []
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+]
+
+def _get_session():
+    """Get or create a random session from the pool."""
+    global _YF_SESSIONS
+    if not _YF_SESSIONS:
+        for ua in USER_AGENTS:
+            s = requests.Session()
+            s.headers.update({"User-Agent": ua})
+            _YF_SESSIONS.append(s)
+    return random.choice(_YF_SESSIONS)
+
 def _rate_limit_wait():
-    """Ensure at least RATE_LIMIT_SEC spacing between Yahoo calls (per process)."""
+    """Ensure at least RATE_LIMIT_SEC spacing between Yahoo calls."""
     global _last_call_ts
     with _YF_LOCK:
         now = time.time()
@@ -75,33 +96,29 @@ def _rate_limit_wait():
             time.sleep(delay)
         _last_call_ts = time.time()
 
-def _with_backoff(fn, retries=3, base=0.75):
-    """Run fn with exponential backoff on exception (handles 429 / transient errors)."""
+def _with_backoff(fn, retries=4, base=1.0):
+    """Run fn with exponential backoff on exception."""
     for i in range(retries):
         try:
             _rate_limit_wait()
             return fn()
-        except Exception:
+        except Exception as e:
             if i == retries - 1:
+                print(f"⚠️ Final retry failed: {e}")
                 return None
-            time.sleep(base * (2 ** i))
-
-_YF_SESSION = requests.Session()
-_YF_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-})
+            wait = base * (2 ** i)
+            print(f"🔄 Retry {i + 1}/{retries} after {wait}s: {e}")
+            time.sleep(wait)
 
 def _yf_ticker(sym: str):
-    """Create a yfinance Ticker bound to the shared session."""
-    return yf.Ticker(sym, session=_YF_SESSION)
+    """Create a yfinance Ticker with a random session."""
+    return yf.Ticker(sym, session=_get_session())
 
 # --------------------------------------------------------------------
 # 📦 Simple In-Memory Cache for Live Data
 # --------------------------------------------------------------------
-LIVE_TTL_SEC = int(os.getenv("LIVE_TTL_SEC", "60"))  # was 30
-
-# In‑memory TTL cache for live quotes
-_LIVE_CACHE = {}  # { "MSFT": (timestamp, data_dict) }
+LIVE_TTL_SEC = int(os.getenv("LIVE_TTL_SEC", "60"))
+_LIVE_CACHE = {}
 _CACHE_LOCK = threading.Lock()
 
 def _get_cached(symbol: str):
@@ -111,9 +128,8 @@ def _get_cached(symbol: str):
         if not entry:
             return None
         ts, data = entry
-        if now - ts <= LIVE_TTL_SEC:  # keep if fresh
+        if now - ts <= LIVE_TTL_SEC:
             return data
-        # expired -> remove
         _LIVE_CACHE.pop(symbol, None)
         return None
 
@@ -169,7 +185,7 @@ def get_live_info(symbol: str):
             return None
 
     current = day_high = day_low = market_cap = prev_close = None
-    shares_out = None  # ensure defined
+    shares_out = None
     try:
         t = _yf_ticker(sym)
 
@@ -187,7 +203,6 @@ def get_live_info(symbol: str):
         # 2) fast_info (no quoteSummary)
         try:
             fi = getattr(t, "fast_info", None)
-            # fast_info can be dict-like; support both
             get = (fi.get if isinstance(fi, dict) else lambda k, d=None: getattr(fi, k, d)) if fi else None
             if get:
                 market_cap = market_cap or clean(get("market_cap"))
@@ -199,7 +214,7 @@ def get_live_info(symbol: str):
         except Exception:
             pass
 
-        # 3) Daily history fallback (no .info)
+        # 3) Daily history fallback
         if any(v is None for v in (current, day_high, day_low, prev_close)):
             try:
                 d1 = _with_backoff(lambda: t.history(period="5d", interval="1d", auto_adjust=False, prepost=True))
@@ -233,8 +248,9 @@ def get_live_info(symbol: str):
         print(f"❌ get_live_info failed for {sym}: {e}")
         return None
 
-# --- NEW: incremental helpers (adapted from data_pipeline/fetch_data.py) ---
-
+# --------------------------------------------------------------------
+# ✅ UPDATED: Incremental refresh helpers with multi-fallback
+# --------------------------------------------------------------------
 def _get_stock_id(symbol: str, conn: psycopg.Connection) -> int | None:
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM stocks WHERE symbol=%s", (symbol,))
@@ -251,20 +267,49 @@ def _get_latest_date(symbol: str, conn: psycopg.Connection):
         return r[0]
 
 def _fetch_history(symbol: str, start_date=None):
-    t = _yf_ticker(symbol)
-    try:
-        if start_date:
-            df = _with_backoff(lambda: t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d"))
-        else:
-            df = _with_backoff(lambda: t.history(period="2y", interval="1d"))
-    except Exception:
-        df = None
-    if df is None or df.empty:
+    """Fetch with multiple fallback strategies."""
+    session = _get_session()
+    t = yf.Ticker(symbol, session=session)
+    
+    # Strategy 1: Targeted date range (if start_date provided)
+    if start_date:
         try:
-            df = _with_backoff(lambda: t.history(period="1y", interval="1d"))
-        except Exception:
-            df = None
-    return df
+            df = _with_backoff(lambda: t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d", auto_adjust=False))
+            if df is not None and not df.empty:
+                print(f"✅ Fetched {len(df)} rows for {symbol} from {start_date}")
+                return df
+        except Exception as e:
+            print(f"⚠️ Date range fetch failed for {symbol}: {e}")
+    
+    # Strategy 2: Recent 5 days (most reliable)
+    try:
+        df = _with_backoff(lambda: t.history(period="5d", interval="1d", auto_adjust=False))
+        if df is not None and not df.empty:
+            print(f"✅ Fetched {len(df)} rows for {symbol} (5d fallback)")
+            return df
+    except Exception as e:
+        print(f"⚠️ 5d fetch failed for {symbol}: {e}")
+    
+    # Strategy 3: 1 month (if 5d fails)
+    try:
+        df = _with_backoff(lambda: t.history(period="1mo", interval="1d", auto_adjust=False))
+        if df is not None and not df.empty:
+            print(f"✅ Fetched {len(df)} rows for {symbol} (1mo fallback)")
+            return df
+    except Exception as e:
+        print(f"⚠️ 1mo fetch failed for {symbol}: {e}")
+    
+    # Strategy 4: yf.download (different API endpoint)
+    try:
+        df = yf.download(symbol, period="5d", interval="1d", progress=False, session=session)
+        if df is not None and not df.empty:
+            print(f"✅ Fetched {len(df)} rows for {symbol} (download method)")
+            return df
+    except Exception as e:
+        print(f"⚠️ Download method failed for {symbol}: {e}")
+    
+    print(f"❌ All fetch strategies failed for {symbol}")
+    return None
 
 def _store_history(symbol: str, company_name: str, df: pd.DataFrame, conn: psycopg.Connection):
     if df is None or df.empty:
@@ -295,34 +340,57 @@ def _store_history(symbol: str, company_name: str, df: pd.DataFrame, conn: psyco
         """, rows)
     conn.commit()
 
-def refresh_symbol(symbol: str, conn: psycopg.Connection):
+def refresh_symbol(symbol: str, conn: psycopg.Connection, max_retries=2):
+    """Refresh with retry logic and detailed logging."""
     symbol = symbol.upper()
     latest_before = _get_latest_date(symbol, conn)
     start = None
     today = datetime.now(timezone.utc).date()
+    
     if latest_before:
         start = latest_before + timedelta(days=1)
         if start > today:
             return {"updated": False, "reason": "up_to_date", "latest": str(latest_before)}
-    df = _fetch_history(symbol, start)
+    
+    # Retry logic
+    df = None
+    for attempt in range(max_retries):
+        df = _fetch_history(symbol, start)
+        if df is not None and not df.empty:
+            break
+        if attempt < max_retries - 1:
+            wait = (attempt + 1) * 3  # 3s, 6s
+            print(f"🔄 Retry {attempt + 1}/{max_retries} for {symbol} in {wait}s...")
+            time.sleep(wait)
+    
     if df is None or df.empty:
-        # fallback try if partial fetch was empty
-        df = _fetch_history(symbol, None)
-        if df is None or df.empty:
-            return {"updated": False, "reason": "no_data_from_yfinance", "latest": str(latest_before) if latest_before else None}
+        print(f"❌ All retries exhausted for {symbol}")
+        return {
+            "updated": False,
+            "reason": "fetch_failed_after_retries",
+            "latest": str(latest_before) if latest_before else None
+        }
+    
     _store_history(symbol, symbol, df, conn)
     latest_after = _get_latest_date(symbol, conn)
     updated = bool(latest_after and (latest_before is None or latest_after > latest_before))
-    return {"updated": updated, "reason": "ok" if updated else "no_new_rows", "latest": str(latest_after)}
+    
+    return {
+        "updated": updated,
+        "reason": "ok" if updated else "no_new_rows",
+        "latest": str(latest_after),
+        "rows_added": len(df)
+    }
 
-# --- REMOVE old background refresh ---
-# Delete the @app.on_event("startup") block
-
-# --- NEW: secure internal batch refresh endpoint ---
+# --------------------------------------------------------------------
+# 🔒 Secure Internal Endpoints
+# --------------------------------------------------------------------
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
+
 @app.get("/", include_in_schema=False)
 def root():
     return {"ok": True, "service": "stock-predictor"}
+
 @app.post("/internal/refresh")
 def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):
     if secret != REFRESH_SECRET:
@@ -330,17 +398,31 @@ def internal_refresh(payload: dict, secret: str = Query(None), conn: psycopg.Con
     symbols = payload.get("symbols") or []
     if not isinstance(symbols, list) or not symbols:
         raise HTTPException(status_code=400, detail="symbols list required")
+    
     results = {}
     updated = []
+    failed = []
+    
     for s in symbols:
         try:
             res = refresh_symbol(s, conn)
             results[s.upper()] = res
             if res.get("updated"):
                 updated.append(s.upper())
+            else:
+                failed.append(s.upper())
         except Exception as e:
-            results[s.upper()] = {"updated": False, "reason": f"error:{e}"}
-    return {"updated": updated, "count": len(updated), "results": results}
+            print(f"❌ Exception refreshing {s}: {e}")
+            results[s.upper()] = {"updated": False, "reason": f"error:{str(e)[:100]}"}
+            failed.append(s.upper())
+    
+    return {
+        "updated": updated,
+        "failed": failed,
+        "success_count": len(updated),
+        "fail_count": len(failed),
+        "results": results
+    }
 
 @app.get("/internal/stale")
 def stale_symbols(secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):
@@ -348,7 +430,6 @@ def stale_symbols(secret: str = Query(None), conn: psycopg.Connection = Depends(
         raise HTTPException(status_code=401, detail="Unauthorized")
     today = datetime.now().date()
     with conn.cursor() as cur:
-        # Symbols whose latest stored date < today
         cur.execute("""
             SELECT s.symbol
             FROM stocks s
@@ -364,7 +445,61 @@ def stale_symbols(secret: str = Query(None), conn: psycopg.Connection = Depends(
         rows = cur.fetchall()
     return [r[0] for r in rows]
 
-# --- FIX refresh parameter logic in /api/stocks/{term} (indentation + flow) ---
+# ✅ NEW: Status endpoint to monitor refresh health
+@app.get("/internal/refresh-status")
+def refresh_status(secret: str = Query(None), conn: psycopg.Connection = Depends(get_db_connection)):
+    if secret != REFRESH_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    
+    with conn.cursor() as cur:
+        # Count stocks with today's data
+        cur.execute("""
+            SELECT COUNT(DISTINCT s.symbol)
+            FROM stocks s
+            JOIN stock_prices sp ON sp.stock_id = s.id
+            WHERE sp.date = %s
+        """, (today,))
+        fresh_count = cur.fetchone()[0]
+        
+        # Count stocks with yesterday's data
+        cur.execute("""
+            SELECT COUNT(DISTINCT s.symbol)
+            FROM stocks s
+            JOIN stock_prices sp ON sp.stock_id = s.id
+            WHERE sp.date = %s
+        """, (yesterday,))
+        yesterday_count = cur.fetchone()[0]
+        
+        # Total stocks
+        cur.execute("SELECT COUNT(*) FROM stocks")
+        total = cur.fetchone()[0]
+        
+        # Most recent dates
+        cur.execute("""
+            SELECT s.symbol, MAX(sp.date) as latest
+            FROM stocks s
+            JOIN stock_prices sp ON sp.stock_id = s.id
+            GROUP BY s.symbol
+            ORDER BY latest DESC
+            LIMIT 10
+        """)
+        recent = [{"symbol": r[0], "latest": str(r[1])} for r in cur.fetchall()]
+    
+    return {
+        "date": str(today),
+        "fresh_today": fresh_count,
+        "fresh_yesterday": yesterday_count,
+        "total_stocks": total,
+        "freshness_percent": round((fresh_count / total * 100) if total > 0 else 0, 2),
+        "recent_updates": recent
+    }
+
+# --------------------------------------------------------------------
+# 🌐 Public API Endpoints
+# --------------------------------------------------------------------
 @app.get("/api/stocks/{term}")
 def get_stock(term: str, refresh: int = Query(0), conn: psycopg.Connection = Depends(get_db_connection)):
     data = query_stock_data(term, conn)
@@ -372,11 +507,9 @@ def get_stock(term: str, refresh: int = Query(0), conn: psycopg.Connection = Dep
         raise HTTPException(status_code=404, detail="Stock not found")
 
     if refresh:
-        # Refresh only this symbol (incremental)
         refresh_symbol(data["symbol"], conn)
         data = query_stock_data(term, conn)
 
-    # Attach live info
     live = get_live_info(data["symbol"])
     if live:
         data["live_info"] = live
@@ -399,13 +532,13 @@ def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):
       "live_info": live,
     }
 
-
 @app.get("/api/live/{symbol}")
 def live(symbol: str, conn: psycopg.Connection = Depends(get_db_connection)):
     info = get_live_info(symbol.upper())
     if info:
         return {"symbol": symbol.upper(), "live_info": info}
-    # fallback to latest stored daily candle
+    
+    # Fallback to latest stored daily candle
     with conn.cursor() as cur:
         cur.execute("""
           SELECT sp.close, sp.high, sp.low
@@ -417,7 +550,14 @@ def live(symbol: str, conn: psycopg.Connection = Depends(get_db_connection)):
         """, (symbol.upper(),))
         r = cur.fetchone()
     if r:
-        fallback = {"currentPrice": float(r[0]), "dayHigh": float(r[1]), "dayLow": float(r[2]), "marketCap": None, "previousClose": None, "source": "db-fallback"}
+        fallback = {
+            "currentPrice": float(r[0]),
+            "dayHigh": float(r[1]),
+            "dayLow": float(r[2]),
+            "marketCap": None,
+            "previousClose": None,
+            "source": "db-fallback"
+        }
         return {"symbol": symbol.upper(), "live_info": fallback}
     raise HTTPException(status_code=404, detail="No live or fallback data")
 
@@ -429,5 +569,6 @@ def list_symbols(conn: psycopg.Connection = Depends(get_db_connection)):
 
 @app.get("/health/db")
 def health(conn: psycopg.Connection = Depends(get_db_connection)):
-    with conn.cursor() as c: c.execute("SELECT 1")
+    with conn.cursor() as c:
+        c.execute("SELECT 1")
     return {"ok": True}

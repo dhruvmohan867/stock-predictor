@@ -7,7 +7,7 @@ A full-stack web application that fetches real-time stock data, stores it in a P
 ## ✨ Features
 
 - 🔐 **User Authentication**: Sign up/sign in with email & password or Google OAuth
-- 📊 **Real-Time Stock Data**: Fetches historical prices from Alpha Vantage API
+- 📊 **Real-Time Stock Data**: Fetches historical prices from Yahoo Finance via `yfinance`
 - 🤖 **ML Predictions**: Linear regression model predicts next-day closing prices
 - 🎨 **Modern UI**: Dark-themed dashboard with interactive charts (Recharts)
 - 🔒 **Secure**: JWT-based authentication, bcrypt password hashing
@@ -172,12 +172,11 @@ stock-predi/
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | `/` | No | Health check |
-| POST | `/register` | No | Create new user |
-| POST | `/token` | No | Login with username/password |
-| POST | `/google-login` | No | Login with Google OAuth |
-| GET | `/api/stocks/{symbol}` | Yes | Get stock price history |
-| POST | `/api/predict` | Yes | Predict next-day close price |
+| GET | `/api/stocks/{symbol}` | No | Get stock price history |
+| POST | `/api/predict` | No | Predict next-day close price |
 | GET | `/health/db` | No | Database connectivity check |
+
+> Note: Auth helpers exist in backend/auth.py, but routes like `/register`, `/token`, and `/google-login` are not implemented yet.
 
 ## 🔐 Environment Variables Reference
 

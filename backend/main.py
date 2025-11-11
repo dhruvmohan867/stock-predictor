@@ -169,10 +169,11 @@ def get_live_info(symbol: str):
             return None
 
     current = day_high = day_low = market_cap = prev_close = None
+    shares_out = None  # ensure defined
     try:
         t = _yf_ticker(sym)
 
-        # 1) Intraday 1m
+        # 1) Intraday 1m (best live read)
         try:
             m1 = _with_backoff(lambda: t.history(period="1d", interval="1m", auto_adjust=False, prepost=True))
             if m1 is not None and not m1.empty:
@@ -183,25 +184,22 @@ def get_live_info(symbol: str):
         except Exception:
             pass
 
-        # 2) fast_info
+        # 2) fast_info (no quoteSummary)
         try:
             fi = getattr(t, "fast_info", None)
-            if fi:
-                market_cap = market_cap or clean(getattr(fi, "market_cap", None))
-                prev_close = prev_close or clean(getattr(fi, "previous_close", None))
-                current = current or clean(getattr(fi, "last_price", None))
-                day_high = day_high or clean(getattr(fi, "day_high", None))
-                day_low = day_low or clean(getattr(fi, "day_low", None))
+            # fast_info can be dict-like; support both
+            get = (fi.get if isinstance(fi, dict) else lambda k, d=None: getattr(fi, k, d)) if fi else None
+            if get:
+                market_cap = market_cap or clean(get("market_cap"))
+                prev_close = prev_close or clean(get("previous_close"))
+                current = current or clean(get("last_price"))
+                day_high = day_high or clean(get("day_high"))
+                day_low = day_low or clean(get("day_low"))
+                shares_out = get("shares_outstanding")
         except Exception:
             pass
 
-        # 3) info (call only if still missing)
-        if any(v is None for v in (current, day_high, day_low, prev_close, market_cap)):
-            info = _with_backoff(lambda: t.info) or {}
-        else:
-            shares_out = None
-
-        # 4) daily fallback
+        # 3) Daily history fallback (no .info)
         if any(v is None for v in (current, day_high, day_low, prev_close)):
             try:
                 d1 = _with_backoff(lambda: t.history(period="5d", interval="1d", auto_adjust=False, prepost=True))
@@ -215,7 +213,7 @@ def get_live_info(symbol: str):
             except Exception:
                 pass
 
-        # Compute market cap if still missing
+        # 4) Compute market cap if still missing
         if market_cap is None and shares_out and current is not None:
             try:
                 market_cap = float(shares_out) * float(current)
@@ -403,11 +401,25 @@ def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):
 
 
 @app.get("/api/live/{symbol}")
-def live(symbol: str):
+def live(symbol: str, conn: psycopg.Connection = Depends(get_db_connection)):
     info = get_live_info(symbol.upper())
-    if not info:
-        raise HTTPException(status_code=404, detail="No live data")
-    return {"symbol": symbol.upper(), "live_info": info}
+    if info:
+        return {"symbol": symbol.upper(), "live_info": info}
+    # fallback to latest stored daily candle
+    with conn.cursor() as cur:
+        cur.execute("""
+          SELECT sp.close, sp.high, sp.low
+          FROM stock_prices sp
+          JOIN stocks s ON s.id = sp.stock_id
+          WHERE s.symbol=%s
+          ORDER BY sp.date DESC
+          LIMIT 1
+        """, (symbol.upper(),))
+        r = cur.fetchone()
+    if r:
+        fallback = {"currentPrice": float(r[0]), "dayHigh": float(r[1]), "dayLow": float(r[2]), "marketCap": None, "previousClose": None, "source": "db-fallback"}
+        return {"symbol": symbol.upper(), "live_info": fallback}
+    raise HTTPException(status_code=404, detail="No live or fallback data")
 
 @app.get("/api/symbols")
 def list_symbols(conn: psycopg.Connection = Depends(get_db_connection)):

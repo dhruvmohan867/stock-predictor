@@ -11,6 +11,7 @@ from psycopg_pool import ConnectionPool
 import pandas as pd
 import math
 import time
+import threading
 
 load_dotenv()
 
@@ -57,21 +58,33 @@ app.add_middleware(
 )
 
 # --------------------------------------------------------------------
-# 📦 Simple In-Memory Cache for Live Data
+# 📦 Simple In-Memory Cache for Live Data (make TTL configurable)
 # --------------------------------------------------------------------
-# replace old cache with TTL-based
-LIVE_TTL_SEC = 30
-_live_cache = {}  # {symbol: (ts, data)}
+LIVE_TTL_SEC = int(os.getenv("LIVE_TTL_SEC", "60"))  # was 30
 
-def _get_cached(symbol: str):
-    hit = _live_cache.get(symbol.upper())
-    if not hit:
-        return None
-    ts, data = hit
-    return data if (time.time() - ts) < LIVE_TTL_SEC else None
+# --- Yahoo rate limit + backoff helpers ---
+_YF_LOCK = threading.Lock()
+_last_call_ts = 0.0
+RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "0.5"))  # min spacing per process
 
-def _set_cached(symbol: str, data: dict):
-    _live_cache[symbol.upper()] = (time.time(), data)
+def _rate_limit_wait():
+    global _last_call_ts
+    with _YF_LOCK:
+        now = time.time()
+        delay = _last_call_ts + RATE_LIMIT_SEC - now
+        if delay > 0:
+            time.sleep(delay)
+        _last_call_ts = time.time()
+
+def _with_backoff(fn, retries=3, base=0.75):
+    for i in range(retries):
+        try:
+            _rate_limit_wait()
+            return fn()
+        except Exception:
+            if i == retries - 1:
+                return None
+            time.sleep(base * (2 ** i))
 
 # --------------------------------------------------------------------
 # 🧠 Model Loading
@@ -124,10 +137,10 @@ def get_live_info(symbol: str):
     try:
         t = yf.Ticker(sym)
 
-        # 1) Intraday 1m — works for most tickers and gives today's range fast
+        # 1) Intraday 1m
         try:
-            m1 = t.history(period="1d", interval="1m", auto_adjust=False, prepost=True)
-            if not m1.empty:
+            m1 = _with_backoff(lambda: t.history(period="1d", interval="1m", auto_adjust=False, prepost=True))
+            if m1 is not None and not m1.empty:
                 last = m1.iloc[-1]
                 current = clean(last.get("Close"))
                 day_high = clean(m1["High"].max())
@@ -135,7 +148,7 @@ def get_live_info(symbol: str):
         except Exception:
             pass
 
-        # 2) fast_info — fill any gaps + market cap
+        # 2) fast_info
         try:
             fi = getattr(t, "fast_info", None)
             if fi:
@@ -147,24 +160,26 @@ def get_live_info(symbol: str):
         except Exception:
             pass
 
-        # 3) info — more fallbacks (also read sharesOutstanding)
-        shares_out = None
-        try:
-            info = t.info or {}
-            shares_out = info.get("sharesOutstanding") or info.get("floatShares")
-            market_cap = market_cap or clean(info.get("marketCap"))
-            prev_close = prev_close or clean(info.get("previousClose"))
-            current = current or clean(info.get("regularMarketPrice") or info.get("currentPrice"))
-            day_high = day_high or clean(info.get("dayHigh"))
-            day_low = day_low or clean(info.get("dayLow"))
-        except Exception:
-            pass
+        # 3) info (call only if still missing)
+        if any(v is None for v in (current, day_high, day_low, prev_close, market_cap)):
+            try:
+                info = _with_backoff(lambda: t.info) or {}
+                shares_out = info.get("sharesOutstanding") or info.get("floatShares")
+                market_cap = market_cap or clean(info.get("marketCap"))
+                prev_close = prev_close or clean(info.get("previousClose"))
+                current = current or clean(info.get("regularMarketPrice") or info.get("currentPrice"))
+                day_high = day_high or clean(info.get("dayHigh"))
+                day_low = day_low or clean(info.get("dayLow"))
+            except Exception:
+                shares_out = None
+        else:
+            shares_out = None
 
-        # 4) final daily fallback (off-hours or restricted tickers)
+        # 4) daily fallback
         if any(v is None for v in (current, day_high, day_low, prev_close)):
             try:
-                d1 = t.history(period="5d", interval="1d", auto_adjust=False, prepost=True)
-                if not d1.empty:
+                d1 = _with_backoff(lambda: t.history(period="5d", interval="1d", auto_adjust=False, prepost=True))
+                if d1 is not None and not d1.empty:
                     last = d1.iloc[-1]
                     prev = d1.iloc[-2] if len(d1) > 1 else None
                     current = current or clean(last.get("Close"))
@@ -215,15 +230,14 @@ def _fetch_history(symbol: str, start_date=None):
     t = yf.Ticker(symbol)
     try:
         if start_date:
-            df = t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d")
+            df = _with_backoff(lambda: t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d"))
         else:
-            df = t.history(period="2y", interval="1d")
+            df = _with_backoff(lambda: t.history(period="2y", interval="1d"))
     except Exception:
         df = None
     if df is None or df.empty:
-        # fallback attempt
         try:
-            df = t.history(period="1y", interval="1d")
+            df = _with_backoff(lambda: t.history(period="1y", interval="1d"))
         except Exception:
             df = None
     return df

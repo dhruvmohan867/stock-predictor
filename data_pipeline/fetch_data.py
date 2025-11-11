@@ -9,6 +9,7 @@ import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import threading
 
 # -------------------------------------------------------------------------
 # 🧩 Setup
@@ -22,6 +23,31 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "0.5"))
+PIPELINE_WORKERS = int(os.getenv("PIPELINE_WORKERS", "3"))
+
+_YF_LOCK = threading.Lock()
+_last_call = 0.0
+
+def _rate_limit_wait():
+    global _last_call
+    with _YF_LOCK:
+        now = time.time()
+        delay = _last_call + RATE_LIMIT_SEC - now
+        if delay > 0:
+            time.sleep(delay)
+        _last_call = time.time()
+
+def _with_backoff(fn, retries=4, base=0.75):
+    for i in range(retries):
+        try:
+            _rate_limit_wait()
+            return fn()
+        except Exception:
+            if i == retries - 1:
+                return None
+            time.sleep(base * (2 ** i))
 
 # -------------------------------------------------------------------------
 # 🧱 Ensure database tables exist
@@ -109,10 +135,10 @@ def fetch_stock_data(symbol, start_date=None):
     try:
         ticker = yf.Ticker(symbol)
         if start_date:
-            data = ticker.history(start=start_date, end=datetime.today(), interval="1d")
+            data = _with_backoff(lambda: ticker.history(start=start_date, end=datetime.today(), interval="1d"))
         else:
-            data = ticker.history(period="1y", interval="1d")
-        if data.empty:
+            data = _with_backoff(lambda: ticker.history(period="1y", interval="1d"))
+        if data is None or data.empty:
             logging.warning(f"No data for {symbol}")
             return None
         return data
@@ -183,7 +209,7 @@ def main():
         return
 
     companies = get_sp500_companies()
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=PIPELINE_WORKERS) as executor:  # was 10
         futures = [executor.submit(process_company, c) for c in companies]
         for i, f in enumerate(as_completed(futures), start=1):
             try:

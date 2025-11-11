@@ -62,29 +62,26 @@ app.add_middleware(
 # --------------------------------------------------------------------
 LIVE_TTL_SEC = int(os.getenv("LIVE_TTL_SEC", "60"))  # was 30
 
-# --- Yahoo rate limit + backoff helpers ---
-_YF_LOCK = threading.Lock()
-_last_call_ts = 0.0
-RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "0.5"))  # min spacing per process
+# In‑memory TTL cache for live quotes
+_LIVE_CACHE = {}  # { "MSFT": (timestamp, data_dict) }
+_CACHE_LOCK = threading.Lock()
 
-def _rate_limit_wait():
-    global _last_call_ts
-    with _YF_LOCK:
-        now = time.time()
-        delay = _last_call_ts + RATE_LIMIT_SEC - now
-        if delay > 0:
-            time.sleep(delay)
-        _last_call_ts = time.time()
+def _get_cached(symbol: str):
+    now = time.time()
+    with _CACHE_LOCK:
+        entry = _LIVE_CACHE.get(symbol)
+        if not entry:
+            return None
+        ts, data = entry
+        if now - ts <= LIVE_TTL_SEC:  # keep if fresh
+            return data
+        # expired -> remove
+        _LIVE_CACHE.pop(symbol, None)
+        return None
 
-def _with_backoff(fn, retries=3, base=0.75):
-    for i in range(retries):
-        try:
-            _rate_limit_wait()
-            return fn()
-        except Exception:
-            if i == retries - 1:
-                return None
-            time.sleep(base * (2 ** i))
+def _set_cached(symbol: str, data: dict):
+    with _CACHE_LOCK:
+        _LIVE_CACHE[symbol] = (time.time(), data)
 
 # --------------------------------------------------------------------
 # 🧠 Model Loading

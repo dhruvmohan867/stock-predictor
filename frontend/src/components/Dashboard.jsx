@@ -2,16 +2,14 @@ import { useState, useEffect, useMemo } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { TrendingUp, DollarSign, Search, BarChart3, AlertCircle, Loader, Building, ArrowUp, ArrowDown, Briefcase, Activity, BrainCircuit, Sun, Moon, BookOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { toPng } from 'html-to-image'; // <-- NEW: Import the screenshot library
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.onrender.com';
 
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "RELIANCE.NS", "TCS.NS", "TSLA", "^NSEI", "^GSPC"];
 
-// --- MODIFIED: Theme Hook with Smooth Transition ---
+// --- NEW: Professional Theme Hook using View Transitions API ---
 const useTheme = () => {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
-  const [transitionImage, setTransitionImage] = useState(null);
 
   useEffect(() => {
     document.documentElement.classList.remove('light', 'dark');
@@ -19,24 +17,21 @@ const useTheme = () => {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  const toggleTheme = async () => {
-    const root = document.documentElement;
-    
-    // 1. Take a screenshot
-    const dataUrl = await toPng(root, {
-      quality: 0.8,
-      pixelRatio: 1,
-    });
-    setTransitionImage(dataUrl);
+  const toggleTheme = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
 
-    // 2. Change the theme instantly
-    setTheme(prevTheme => (prevTheme === 'dark' ? 'light' : 'dark'));
-
-    // 3. The screenshot will fade out in the UI, revealing the new theme
-    setTimeout(() => setTransitionImage(null), 600);
+    // Use the browser's new View Transitions API if available
+    if (document.startViewTransition) {
+      document.startViewTransition(() => {
+        setTheme(newTheme);
+      });
+    } else {
+      // Fallback for browsers that don't support it
+      setTheme(newTheme);
+    }
   };
 
-  return [theme, toggleTheme, transitionImage];
+  return [theme, toggleTheme];
 };
 
 
@@ -71,7 +66,7 @@ const Dashboard = () => {
   const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [theme, toggleTheme, transitionImage] = useTheme(); // <-- MODIFIED
+  const [theme, toggleTheme] = useTheme(); // <-- MODIFIED: Simpler return value
   const [showKnowledge, setShowKnowledge] = useState(false);
 
   const apiCall = async (endpoint, options = {}) => {
@@ -141,20 +136,7 @@ const Dashboard = () => {
 
   return (
     <div className="w-full min-h-screen bg-slate-100 dark:bg-gray-900 text-slate-800 dark:text-gray-200 font-sans flex transition-colors duration-300">
-      {/* --- NEW: Transition Overlay --- */}
-      <AnimatePresence>
-        {transitionImage && (
-          <motion.img
-            key="theme-transition"
-            src={transitionImage}
-            alt="Theme transition"
-            className="fixed inset-0 w-full h-full object-cover z-50 pointer-events-none"
-            initial={{ opacity: 1 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0, transition: { duration: 0.6, ease: 'easeInOut' } }}
-          />
-        )}
-      </AnimatePresence>
+      {/* REMOVED: The transition overlay is no longer needed */}
 
       {/* Sidebar */}
       <aside className="w-72 bg-white dark:bg-gray-950/50 border-r border-slate-200 dark:border-gray-800 p-6 flex flex-col shrink-0">
@@ -347,3 +329,4 @@ const KnowledgeBase = ({ onClose }) => (
 );
 
 export default Dashboard;
+

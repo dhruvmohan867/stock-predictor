@@ -168,94 +168,35 @@ def query_stock_data(search_term, conn: psycopg.Connection):
         return {"symbol": symbol, "company_name": name,
                 "prices": [{"date": r[0].isoformat(),"open": float(r[1]),"high": float(r[2]),"low": float(r[3]),"close": float(r[4]),"volume": int(r[5])} for r in rows]}
 
-def get_live_info(symbol: str):
-    """Provider-agnostic live metrics with cache + fallbacks."""
+def get_live_info(symbol: str, conn: psycopg.Connection):
+    """
+    MODIFIED: This function no longer calls live APIs.
+    It fetches the most recent record from the database.
+    """
     sym = symbol.upper()
-    cached = _get_cached(sym)
-    if cached:
-        return cached
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT sp.close, sp.high, sp.low, s.company_name
+            FROM stock_prices sp
+            JOIN stocks s ON s.id = sp.stock_id
+            WHERE s.symbol = %s
+            ORDER BY sp.date DESC
+            LIMIT 1
+        """, (sym,))
+        latest_record = cur.fetchone()
 
-    # 1) Try Alpha Vantage if selected or in auto mode with key present
-    if LIVE_PROVIDER in ("alpha", "auto"):
-        av = _alpha_live(sym)
-        if av and any(av.get(k) is not None for k in ("currentPrice","dayHigh","dayLow","previousClose")):
-            _set_cached(sym, av)
-            return av
-
-    # 2) Fallback to Yahoo (existing logic)
-    def clean(v):
-        try:
-            if v is None:
-                return None
-            f = float(v)
-            return None if math.isnan(f) else f
-        except Exception:
-            return None
-
-    current = day_high = day_low = market_cap = prev_close = None
-    shares_out = None
-    try:
-        t = _yf_ticker(sym)
-
-        # 1) Intraday 1m (best live read)
-        try:
-            m1 = _with_backoff(lambda: t.history(period="1d", interval="1m", auto_adjust=False, prepost=True))
-            if m1 is not None and not m1.empty:
-                last = m1.iloc[-1]
-                current = clean(last.get("Close"))
-                day_high = clean(m1["High"].max())
-                day_low = clean(m1["Low"].min())
-        except Exception:
-            pass
-
-        # 2) fast_info (no quoteSummary)
-        try:
-            fi = getattr(t, "fast_info", None)
-            get = (fi.get if isinstance(fi, dict) else lambda k, d=None: getattr(fi, k, d)) if fi else None
-            if get:
-                market_cap = market_cap or clean(get("market_cap"))
-                prev_close = prev_close or clean(get("previous_close"))
-                current = current or clean(get("last_price"))
-                day_high = day_high or clean(get("day_high"))
-                day_low = day_low or clean(get("day_low"))
-                shares_out = get("shares_outstanding")
-        except Exception:
-            pass
-
-        # 3) Daily history fallback
-        if any(v is None for v in (current, day_high, day_low, prev_close)):
-            try:
-                d1 = _with_backoff(lambda: t.history(period="5d", interval="1d", auto_adjust=False, prepost=True))
-                if d1 is not None and not d1.empty:
-                    last = d1.iloc[-1]
-                    prev = d1.iloc[-2] if len(d1) > 1 else None
-                    current = current or clean(last.get("Close"))
-                    day_high = day_high or clean(last.get("High"))
-                    day_low = day_low or clean(last.get("Low"))
-                    prev_close = prev_close or clean((prev or last).get("Close"))
-            except Exception:
-                pass
-
-        # 4) Compute market cap if still missing
-        if market_cap is None and shares_out and current is not None:
-            try:
-                market_cap = float(shares_out) * float(current)
-            except Exception:
-                pass
-
-        data = {
-            "currentPrice": current,
-            "dayHigh": day_high,
-            "dayLow": day_low,
-            "marketCap": market_cap,
-            "previousClose": prev_close,
-            "source": "yahoo"
-        }
-        _set_cached(sym, data)
-        return data
-    except Exception as e:
-        print(f"❌ get_live_info failed for {sym}: {e}")
+    if not latest_record:
         return None
+
+    close, high, low, name = latest_record
+    return {
+        "currentPrice": float(close) if close else None,
+        "dayHigh": float(high) if high else None,
+        "dayLow": float(low) if low else None,
+        "marketCap": None,  # Market cap is not in our daily data
+        "previousClose": None, # This would require looking at the second-to-last record
+        "source": "database" # Clearly indicate the data source
+    }
 
 # --------------------------------------------------------------------
 # ✅ UPDATED: Incremental refresh helpers with multi-fallback
@@ -275,47 +216,8 @@ def _get_latest_date(symbol: str, conn: psycopg.Connection):
         r = cur.fetchone()
         return r[0]
 
-def _fetch_history_alpha(symbol: str):
-    if not ALPHA_VANTAGE_API_KEY:
-        return None
-    try:
-        _av_wait()
-        r = _AV_SESSION.get(
-            "https://www.alphavantage.co/query",
-            params={"function": "TIME_SERIES_DAILY_ADJUSTED", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY},
-            timeout=25,
-        )
-        j = r.json()
-        ts = j.get("Time Series (Daily)")
-        if not ts:
-            return None
-        records = []
-        for date_str, row in ts.items():
-            records.append({
-               "Date": datetime.strptime(date_str, "%Y-%m-%d").date(),
-               "Open": float(row.get("1. open", 0)),
-               "High": float(row.get("2. high", 0)),
-               "Low": float(row.get("3. low", 0)),
-               "Close": float(row.get("4. close", 0)),
-               "Volume": int(float(row.get("6. volume", 0)))
-            })
-        df = pd.DataFrame(records)
-        df.sort_values("Date", inplace=True)
-        df.set_index("Date", inplace=True)
-        return df
-    except Exception:
-        return None
-
 def _fetch_history(symbol: str, start_date=None):
-    # Alpha path first if enabled
-    if ALPHA_HISTORY:
-        df_alpha = _fetch_history_alpha(symbol)
-        if df_alpha is not None and not df_alpha.empty:
-            if start_date:
-                df_alpha = df_alpha[df_alpha.index >= start_date]
-            print(f"✅ Alpha history {len(df_alpha)} rows for {symbol}")
-            return df_alpha
-    # Yahoo fallback (let yfinance manage session)
+    # This function now ONLY uses Yahoo finance.
     t = yf.Ticker(symbol)
     def safe(fn):
         try:
@@ -542,10 +444,12 @@ def get_stock(term: str, refresh: int = Query(0), conn: psycopg.Connection = Dep
         raise HTTPException(status_code=404, detail="Stock not found")
 
     if refresh:
+        # Manual refresh per symbol still works if you need it
         refresh_symbol(data["symbol"], conn)
         data = query_stock_data(term, conn)
 
-    live = get_live_info(data["symbol"])
+    # Use the new database-driven get_live_info
+    live = get_live_info(data["symbol"], conn)
     if live:
         data["live_info"] = live
     return data
@@ -560,7 +464,8 @@ def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):
     latest = data["prices"][0]
     df = pd.DataFrame([latest])
     prediction = model.predict(df[["open","high","low","close","volume"]])[0]
-    live = get_live_info(req["symbol"])
+    # Use the new database-driven get_live_info
+    live = get_live_info(req["symbol"], conn)
     return {
       "symbol": req["symbol"],
       "predicted_next_day_close": float(prediction),
@@ -569,32 +474,12 @@ def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):
 
 @app.get("/api/live/{symbol}")
 def live(symbol: str, conn: psycopg.Connection = Depends(get_db_connection)):
-    info = get_live_info(symbol.upper())
+    # This endpoint now uses the reliable, database-backed function
+    info = get_live_info(symbol.upper(), conn)
     if info:
         return {"symbol": symbol.upper(), "live_info": info}
     
-    # Fallback to latest stored daily candle
-    with conn.cursor() as cur:
-        cur.execute("""
-          SELECT sp.close, sp.high, sp.low
-          FROM stock_prices sp
-          JOIN stocks s ON s.id = sp.stock_id
-          WHERE s.symbol=%s
-          ORDER BY sp.date DESC
-          LIMIT 1
-        """, (symbol.upper(),))
-        r = cur.fetchone()
-    if r:
-        fallback = {
-            "currentPrice": float(r[0]),
-            "dayHigh": float(r[1]),
-            "dayLow": float(r[2]),
-            "marketCap": None,
-            "previousClose": None,
-            "source": "db-fallback"
-        }
-        return {"symbol": symbol.upper(), "live_info": fallback}
-    raise HTTPException(status_code=404, detail="No live or fallback data")
+    raise HTTPException(status_code=404, detail="No data for this symbol in the database.")
 
 @app.get("/api/symbols")
 def list_symbols(conn: psycopg.Connection = Depends(get_db_connection)):
@@ -607,59 +492,3 @@ def health(conn: psycopg.Connection = Depends(get_db_connection)):
     with conn.cursor() as c:
         c.execute("SELECT 1")
     return {"ok": True}
-
-# --------------------------------------------------------------------
-# 🔌 Alpha Vantage client (live data alternative to Yahoo)
-# --------------------------------------------------------------------
-ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
-LIVE_PROVIDER = os.getenv("LIVE_PROVIDER", "auto")  # alpha | yahoo | auto
-ALPHA_HISTORY = os.getenv("ALPHA_HISTORY", "0") == "1"   # <-- add this
-AV_RATE_LIMIT_SEC = float(os.getenv("AV_RATE_LIMIT_SEC", "12"))  # ~5 req/min free tier
-
-_AV_SESSION = requests.Session()
-_AV_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-})
-_AV_LOCK = threading.Lock()
-_av_last_call = 0.0
-
-def _av_wait():
-    global _av_last_call
-    with _AV_LOCK:
-        now = time.time()
-        delay = _av_last_call + AV_RATE_LIMIT_SEC - now
-        if delay > 0:
-            time.sleep(delay)
-        _av_last_call = time.time()
-
-def _alpha_live(symbol: str) -> dict | None:
-    """Use Alpha Vantage GLOBAL_QUOTE for live price/high/low/prevClose."""
-    if not ALPHA_VANTAGE_API_KEY:
-        return None
-    try:
-        _av_wait()
-        r = _AV_SESSION.get(
-            "https://www.alphavantage.co/query",
-            params={"function": "GLOBAL_QUOTE", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY},
-            timeout=20,
-        )
-        j = r.json()
-        q = j.get("Global Quote") or {}
-        if not q:
-            return None
-        def f(k):
-            v = q.get(k)
-            try:
-                return None if v in (None, "", "None") else float(v)
-            except Exception:
-                return None
-        return {
-            "currentPrice": f("05. price"),
-            "dayHigh":      f("03. high"),
-            "dayLow":       f("04. low"),
-            "previousClose":f("08. previous close"),
-            "marketCap":    None,  # can be fetched via OVERVIEW if needed (extra call)
-            "source":       "alpha_vantage"
-        }
-    except Exception:
-        return None

@@ -1,6 +1,6 @@
 CREATE TABLE stocks (
     id SERIAL PRIMARY KEY,
-    symbol VARCHAR(10) UNIQUE NOT NULL,
+    symbol VARCHAR(30) UNIQUE NOT NULL,
     company_name VARCHAR(100),
     sector VARCHAR(50)
 );

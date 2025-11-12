@@ -4,12 +4,12 @@ import yfinance as yf
 import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
-from io import StringIO
+from io import StringIO # <-- Add StringIO
 import time
 import requests
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed  # <-- add this
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # -------------------------------------------------------------------------
 # 🧩 Setup
@@ -59,7 +59,7 @@ def create_tables_if_not_exist():
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS stocks (
                         id SERIAL PRIMARY KEY,
-                        symbol VARCHAR(10) UNIQUE NOT NULL,
+                        symbol VARCHAR(30) UNIQUE NOT NULL, -- MODIFIED: Increased length
                         company_name VARCHAR(100),
                         sector VARCHAR(50)
                     )
@@ -85,41 +85,51 @@ def create_tables_if_not_exist():
         return False
 
 # -------------------------------------------------------------------------
-# 🌐 Fetch S&P 500 company list
+# 🌐 NEW: Functions to fetch S&P 500 and NIFTY 500 stock lists
 # -------------------------------------------------------------------------
-def get_sp500_companies():
+def get_sp500_stocks():
+    """Fetches the list of S&P 500 companies from Wikipedia."""
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        html = requests.get(url, headers=headers, timeout=20).text
-        tables = pd.read_html(StringIO(html))
-        
-        # Find the correct table by looking for a 'Symbol' or 'Ticker' column
-        df = next(
-            (t for t in tables if any(col in t.columns for col in ['Symbol', 'Ticker symbol'])),
-            None
-        )
-        if df is None:
-            raise ValueError("Could not find the S&P 500 constituents table.")
-
-        # Find the exact column names for symbol and security
-        symbol_col = 'Symbol' if 'Symbol' in df.columns else 'Ticker symbol'
-        security_col = 'Security' if 'Security' in df.columns else 'Company'
-
-        companies = [
-            {"symbol": row[symbol_col].replace(".", "-"), "name": row[security_col]}
-            for _, row in df.iterrows()
-        ]
-        logging.info(f"✅ Loaded {len(companies)} S&P 500 companies.")
-        return companies
+        html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).text
+        df = pd.read_html(StringIO(html))[0]
+        df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
+        stocks = [{"symbol": row['Symbol'], "name": row['Security']} for _, row in df.iterrows()]
+        logging.info(f"✅ Fetched {len(stocks)} S&P 500 stocks.")
+        return stocks
     except Exception as e:
-        logging.warning(f"Could not fetch S&P 500 list: {e}")
-        return [
-            {"symbol": "AAPL", "name": "Apple"},
-            {"symbol": "MSFT", "name": "Microsoft"},
-            {"symbol": "TSLA", "name": "Tesla"},
-            {"symbol": "GOOGL", "name": "Alphabet"},
-        ]
+        logging.error(f"Could not fetch S&P 500 stocks: {e}")
+        return []
+
+def get_nifty500_stocks():
+    """Fetches the list of NIFTY 500 companies from a public CSV."""
+    try:
+        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        df = pd.read_csv(url)
+        # Indian stocks need a '.NS' suffix for yfinance
+        stocks = [{"symbol": f"{row['Symbol']}.NS", "name": row['Company Name']} for _, row in df.iterrows()]
+        logging.info(f"✅ Fetched {len(stocks)} NIFTY 500 stocks.")
+        return stocks
+    except Exception as e:
+        logging.error(f"Could not fetch NIFTY 500 stocks: {e}")
+        return []
+
+def get_target_stocks():
+    """Combines S&P 500 and NIFTY 500 lists."""
+    sp500 = get_sp500_stocks()
+    nifty500 = get_nifty500_stocks()
+    
+    # Add a few major indexes as well
+    indexes = [
+        {"symbol": "^NSEI", "name": "NIFTY 50"},
+        {"symbol": "^BSESN", "name": "S&P BSE SENSEX"},
+        {"symbol": "^IXIC", "name": "NASDAQ Composite"},
+        {"symbol": "^GSPC", "name": "S&P 500"},
+    ]
+    
+    all_stocks = sp500 + nifty500 + indexes
+    logging.info(f"✅ Defined a target list of {len(all_stocks)} total stocks/indexes.")
+    return all_stocks
 
 # -------------------------------------------------------------------------
 # 📅 Incremental fetching helper
@@ -142,79 +152,31 @@ def get_latest_date(symbol):
         return None
 
 # -------------------------------------------------------------------------
-# 📈 Fetch data from providers
+# 📈 REMOVED: All Alpha Vantage logic is gone for simplicity
 # -------------------------------------------------------------------------
-# The _YF_SESSION is no longer used as yfinance >0.2.40 handles its own session.
-# _YF_SESSION = requests.Session()
-# _YF_SESSION.headers.update({
-#     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-# })
-
-ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
-ALPHA_HISTORY = os.getenv("ALPHA_HISTORY", "0") == "1"
-AV_RATE_LIMIT_SEC = float(os.getenv("AV_RATE_LIMIT_SEC", "12"))
-
-_AV_LOCK = threading.Lock()
-_av_last = 0.0
-def _av_wait():
-    global _av_last
-    with _AV_LOCK:
-        now = time.time()
-        delay = _av_last + AV_RATE_LIMIT_SEC - now
-        if delay > 0:
-            time.sleep(delay)
-        _av_last = time.time()
-
-def fetch_stock_data_alpha(symbol, start_date=None):
-    if not ALPHA_HISTORY or not ALPHA_VANTAGE_API_KEY:
-        return None
-    try:
-        _av_wait()
-        r = requests.get(
-            "https://www.alphavantage.co/query",
-            params={"function": "TIME_SERIES_DAILY_ADJUSTED", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY},
-            timeout=25,
-        )
-        j = r.json()
-        ts = j.get("Time Series (Daily)")
-        if not ts:
-            logging.warning(f"Alpha returned no 'Time Series (Daily)' for {symbol}: "
-                            f"Note={j.get('Note')} Error={j.get('Error Message')}")
-            return None
-        rows = []
-        for d, row in ts.items():
-            rows.append({
-                "Date": datetime.strptime(d, "%Y-%m-%d").date(),
-                "Open": float(row.get("1. open", 0)),
-                "High": float(row.get("2. high", 0)),
-                "Low":  float(row.get("3. low", 0)),
-                "Close":float(row.get("4. close", 0)),
-                "Volume": int(float(row.get("6. volume", 0))),
-            })
-        df = pd.DataFrame(rows).sort_values("Date")
-        if start_date:
-            df = df[df["Date"] >= start_date]
-        df.set_index("Date", inplace=True)
-        return df
-    except Exception as e:
-        logging.warning(f"Alpha history failed for {symbol}: {e}")
-        return None
 
 def fetch_stock_data(symbol, start_date=None):
-    # Try Alpha first
-    df = fetch_stock_data_alpha(symbol, start_date)
-    if df is not None and not df.empty:
-        return df
-    # Yahoo fallback (no custom session)
+    """Fetches historical data exclusively from Yahoo Finance."""
     try:
-        ticker = yf.Ticker(symbol)  # ← remove session arg
-        if start_date:
-            data = _with_backoff(lambda: ticker.history(start=start_date, end=datetime.today(), interval="1d"))
-        else:
-            data = _with_backoff(lambda: ticker.history(period="1y", interval="1d"))
+        # Use yfinance to fetch data. It's robust.
+        ticker = yf.Ticker(symbol)
+        
+        # Fetch data from the start date. If no start date, get max history.
+        data = _with_backoff(lambda: ticker.history(
+            start=start_date, 
+            end=datetime.today(), 
+            interval="1d",
+            auto_adjust=False # Important for raw OHLCV data
+        ))
+
         if data is None or data.empty:
-            logging.warning(f"No data for {symbol}")
+            # If that fails, try a shorter period as a fallback
+            data = _with_backoff(lambda: ticker.history(period="1y", interval="1d", auto_adjust=False))
+
+        if data is None or data.empty:
+            logging.warning(f"No data found for {symbol} after retries.")
             return None
+            
         return data
     except Exception as e:
         logging.error(f"Error fetching {symbol}: {e}")
@@ -267,8 +229,18 @@ def process_company(company):
     name = company["name"]
     latest = get_latest_date(symbol)
     start_date = None
+
+    # --- RESUME LOGIC START ---
+    # If we have data and the latest date is today or yesterday, skip it.
+    # This makes the pipeline resumable and efficient.
     if latest:
+        today = datetime.today().date()
+        if latest >= today - timedelta(days=1):
+            logging.info(f"✅ Skipping '{symbol}', already up-to-date ({latest}).")
+            return # Exit this function for this symbol
         start_date = latest + timedelta(days=1)
+    # --- RESUME LOGIC END ---
+        
     df = fetch_stock_data(symbol, start_date)
     if df is not None and not df.empty:
         store_stock_data(symbol, name, df)
@@ -282,13 +254,13 @@ def main():
         logging.error("❌ Database setup failed")
         return
 
-    companies = get_sp500_companies()
-    with ThreadPoolExecutor(max_workers=PIPELINE_WORKERS) as executor:  # set via env (1 recommended on free AV)
+    companies = get_target_stocks() # <-- Use the new function
+    with ThreadPoolExecutor(max_workers=PIPELINE_WORKERS) as executor:
         futures = [executor.submit(process_company, c) for c in companies]
         for i, f in enumerate(as_completed(futures), start=1):
             try:
                 f.result()
-                logging.info(f"✅ ({i}/{len(companies)}) Done")
+                logging.info(f"✅ ({i}/{len(companies)}) Processed {companies[i-1]['symbol']}")
             except Exception as e:
                 logging.error(f"Thread error: {e}")
     logging.info("🎯 All stock data updated successfully!")

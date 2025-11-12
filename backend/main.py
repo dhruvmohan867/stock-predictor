@@ -160,11 +160,24 @@ def query_stock_data(search_term, conn: psycopg.Connection):
         stock = cur.fetchone()
         if not stock: return None
         stock_id, symbol, name = stock
+        
+        # --- MODIFICATION: Filter out future dates ---
+        # This query now explicitly ignores any data with a date after today,
+        # preventing bad data (like the 2025 date) from ever reaching the frontend.
+        today = datetime.now(timezone.utc).date()
         cur.execute("""
             SELECT date, open, high, low, close, volume
-            FROM stock_prices WHERE stock_id=%s ORDER BY date DESC LIMIT 365
-        """, (stock_id,))
+            FROM stock_prices 
+            WHERE stock_id=%s AND date <= %s
+            ORDER BY date DESC 
+            LIMIT 365
+        """, (stock_id, today))
         rows = cur.fetchall()
+        
+        if not rows:
+            # Fallback if only future data exists for some reason
+            return {"symbol": symbol, "company_name": name, "prices": []}
+
         return {"symbol": symbol, "company_name": name,
                 "prices": [{"date": r[0].isoformat(),"open": float(r[1]),"high": float(r[2]),"low": float(r[3]),"close": float(r[4]),"volume": int(r[5])} for r in rows]}
 

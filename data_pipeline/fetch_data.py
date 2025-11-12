@@ -91,10 +91,23 @@ def get_sp500_companies():
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         headers = {"User-Agent": "Mozilla/5.0"}
-        html = requests.get(url, headers=headers).text
-        df = pd.read_html(StringIO(html))[0]
+        html = requests.get(url, headers=headers, timeout=20).text
+        tables = pd.read_html(StringIO(html))
+        
+        # Find the correct table by looking for a 'Symbol' or 'Ticker' column
+        df = next(
+            (t for t in tables if any(col in t.columns for col in ['Symbol', 'Ticker symbol'])),
+            None
+        )
+        if df is None:
+            raise ValueError("Could not find the S&P 500 constituents table.")
+
+        # Find the exact column names for symbol and security
+        symbol_col = 'Symbol' if 'Symbol' in df.columns else 'Ticker symbol'
+        security_col = 'Security' if 'Security' in df.columns else 'Company'
+
         companies = [
-            {"symbol": row["Symbol"].replace(".", "-"), "name": row["Security"]}
+            {"symbol": row[symbol_col].replace(".", "-"), "name": row[security_col]}
             for _, row in df.iterrows()
         ]
         logging.info(f"✅ Loaded {len(companies)} S&P 500 companies.")
@@ -129,12 +142,13 @@ def get_latest_date(symbol):
         return None
 
 # -------------------------------------------------------------------------
-# 📈 Fetch data from Yahoo Finance
+# 📈 Fetch data from providers
 # -------------------------------------------------------------------------
-_YF_SESSION = requests.Session()
-_YF_SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-})
+# The _YF_SESSION is no longer used as yfinance >0.2.40 handles its own session.
+# _YF_SESSION = requests.Session()
+# _YF_SESSION.headers.update({
+#     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+# })
 
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 ALPHA_HISTORY = os.getenv("ALPHA_HISTORY", "0") == "1"

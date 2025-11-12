@@ -3,7 +3,7 @@ import sys
 import psycopg
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Response, Query
+from fastapi import FastAPI, HTTPException, Depends, Response, Query, BackgroundTasks # MODIFIED: Add BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
@@ -315,6 +315,56 @@ def refresh_symbol(symbol: str, conn: psycopg.Connection, max_retries=2):
 # 🔒 Secure Internal Endpoints
 # --------------------------------------------------------------------
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
+
+def _run_full_refresh(conn: psycopg.Connection):
+    """
+    Fetches all symbols from the database and refreshes each one.
+    Designed to be run in a background task.
+    """
+    print("🚀 Starting background task: Full database refresh.")
+    with conn.cursor() as cur:
+        cur.execute("SELECT symbol FROM stocks ORDER BY symbol")
+        symbols = [r[0] for r in cur.fetchall()]
+    
+    print(f"Found {len(symbols)} symbols to refresh.")
+    
+    updated_count = 0
+    failed_symbols = []
+
+    for i, symbol in enumerate(symbols):
+        try:
+            print(f"🔄 ({i+1}/{len(symbols)}) Refreshing {symbol}...")
+            result = refresh_symbol(symbol, conn)
+            if result.get("updated"):
+                updated_count += 1
+            # Add a small delay to be kind to the API
+            time.sleep(0.1) 
+        except Exception as e:
+            print(f"❌ Unhandled error refreshing {symbol}: {e}")
+            failed_symbols.append(symbol)
+            
+    print("✅ Background refresh task complete.")
+    print(f"Total Updated: {updated_count}/{len(symbols)}")
+    if failed_symbols:
+        print(f"Failed symbols: {failed_symbols}")
+
+@app.post("/internal/refresh-all")
+def refresh_all_stocks(
+    background_tasks: BackgroundTasks,
+    secret: str = Query(None),
+    conn: psycopg.Connection = Depends(get_db_connection)
+):
+    """
+    Triggers a full refresh of all stock data in the database as a background task.
+    """
+    if secret != REFRESH_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    background_tasks.add_task(_run_full_refresh, conn)
+    
+    return {
+        "message": "Full data refresh started in the background. This may take a while."
+    }
 
 @app.get("/", include_in_schema=False)
 def root():

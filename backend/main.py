@@ -3,7 +3,9 @@ import sys
 import psycopg
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Response, Query, BackgroundTasks # MODIFIED: Add BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Response, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse # <-- ADD THIS
+import asyncio # <-- ADD THIS
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import joblib
@@ -328,6 +330,60 @@ def refresh_symbol(symbol: str, conn: psycopg.Connection, max_retries=2):
 # 🔒 Secure Internal Endpoints
 # --------------------------------------------------------------------
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
+
+async def _stream_full_refresh(conn: psycopg.Connection):
+    """
+    Async generator that yields refresh progress as strings.
+    """
+    yield "🚀 Starting streamed background task: Full database refresh.\n"
+    
+    # Database calls are synchronous, so run them in a thread to not block the event loop
+    def get_symbols():
+        with conn.cursor() as cur:
+            cur.execute("SELECT symbol FROM stocks ORDER BY symbol")
+            return [r[0] for r in cur.fetchall()]
+
+    symbols = await asyncio.to_thread(get_symbols)
+    
+    yield f"Found {len(symbols)} symbols to refresh.\n"
+    
+    updated_count = 0
+    failed_symbols = []
+
+    for i, symbol in enumerate(symbols):
+        try:
+            yield f"🔄 ({i+1}/{len(symbols)}) Refreshing {symbol}...\n"
+            
+            # refresh_symbol is synchronous, run it in a thread
+            result = await asyncio.to_thread(refresh_symbol, symbol, conn)
+
+            if result.get("updated"):
+                updated_count += 1
+            
+            # Small async sleep to be kind to the API and allow other tasks
+            await asyncio.sleep(0.1) 
+        except Exception as e:
+            error_msg = f"❌ Unhandled error refreshing {symbol}: {e}\n"
+            yield error_msg
+            failed_symbols.append(symbol)
+            
+    yield "\n✅ Background refresh task complete.\n"
+    yield f"Total Updated: {updated_count}/{len(symbols)}\n"
+    if failed_symbols:
+        yield f"Failed symbols: {', '.join(failed_symbols)}\n"
+
+@app.post("/internal/refresh-all-stream")
+async def refresh_all_stocks_stream(
+    secret: str = Query(None),
+    conn: psycopg.Connection = Depends(get_db_connection)
+):
+    """
+    Triggers a full refresh and streams the logs back to the client.
+    """
+    if secret != REFRESH_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    return StreamingResponse(_stream_full_refresh(conn), media_type="text/plain")
 
 def _run_full_refresh(conn: psycopg.Connection):
     """

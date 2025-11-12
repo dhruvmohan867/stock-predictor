@@ -331,35 +331,35 @@ def refresh_symbol(symbol: str, conn: psycopg.Connection, max_retries=2):
 # --------------------------------------------------------------------
 REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
 
-async def _stream_full_refresh(conn: psycopg.Connection):
+async def _stream_full_refresh(): # <-- MODIFIED: No longer takes 'conn'
     """
     Async generator that yields refresh progress as strings.
-    MODIFIED: Now only fetches and processes stale symbols.
+    MODIFIED: Now gets a fresh connection for each symbol.
     """
     yield "🚀 Starting streamed background task: Refreshing stale stocks.\n"
     
-    # --- MODIFICATION START: Fetch only stale symbols ---
+    db_pool = get_pool() # <-- Get the pool once at the start
+
     def get_stale_symbols():
         """Get symbols whose last update was before yesterday."""
-        # We use yesterday to account for market closures and timezones.
-        # A stock updated yesterday is considered fresh.
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT s.symbol
-                FROM stocks s
-                LEFT JOIN (
-                    SELECT stock_id, MAX(date) as max_date
-                    FROM stock_prices
-                    GROUP BY stock_id
-                ) p ON s.id = p.stock_id
-                WHERE p.max_date IS NULL OR p.max_date < %s
-                ORDER BY s.symbol
-            """, (yesterday,))
-            return [r[0] for r in cur.fetchall()]
+        # Get a temporary connection just for this query
+        with db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT s.symbol
+                    FROM stocks s
+                    LEFT JOIN (
+                        SELECT stock_id, MAX(date) as max_date
+                        FROM stock_prices
+                        GROUP BY stock_id
+                    ) p ON s.id = p.stock_id
+                    WHERE p.max_date IS NULL OR p.max_date < %s
+                    ORDER BY s.symbol
+                """, (yesterday,))
+                return [r[0] for r in cur.fetchall()]
 
     symbols_to_refresh = await asyncio.to_thread(get_stale_symbols)
-    # --- MODIFICATION END ---
     
     if not symbols_to_refresh:
         yield "✅ All stocks are up-to-date. Nothing to do.\n"
@@ -370,18 +370,17 @@ async def _stream_full_refresh(conn: psycopg.Connection):
     updated_count = 0
     failed_symbols = []
 
-    for i, symbol in enumerate(symbols_to_refresh): # MODIFIED: Use the new list
+    for i, symbol in enumerate(symbols_to_refresh):
         try:
-            # The "i+1" now refers to the position in the stale list
             yield f"🔄 ({i+1}/{len(symbols_to_refresh)}) Refreshing {symbol}...\n"
             
-            # refresh_symbol is synchronous, run it in a thread
-            result = await asyncio.to_thread(refresh_symbol, symbol, conn)
+            # --- CORE FIX: Get a fresh connection for each symbol ---
+            with db_pool.connection() as conn_for_symbol:
+                result = await asyncio.to_thread(refresh_symbol, symbol, conn_for_symbol)
 
             if result.get("updated"):
                 updated_count += 1
             
-            # Small async sleep to be kind to the API and allow other tasks
             await asyncio.sleep(0.1) 
         except Exception as e:
             error_msg = f"❌ Unhandled error refreshing {symbol}: {e}\n"
@@ -396,7 +395,7 @@ async def _stream_full_refresh(conn: psycopg.Connection):
 @app.post("/internal/refresh-all-stream")
 async def refresh_all_stocks_stream(
     secret: str = Query(None),
-    conn: psycopg.Connection = Depends(get_db_connection)
+    # MODIFIED: We no longer need to inject a connection here
 ):
     """
     Triggers a full refresh and streams the logs back to the client.
@@ -404,7 +403,8 @@ async def refresh_all_stocks_stream(
     if secret != REFRESH_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    return StreamingResponse(_stream_full_refresh(conn), media_type="text/plain")
+    # MODIFIED: Call the generator without passing 'conn'
+    return StreamingResponse(_stream_full_refresh(), media_type="text/plain")
 
 def _run_full_refresh(conn: psycopg.Connection):
     """

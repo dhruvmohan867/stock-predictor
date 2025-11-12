@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from io import StringIO
 import time
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed  # <-- add this
 
 # -------------------------------------------------------------------------
 # 🧩 Setup
@@ -25,7 +25,7 @@ logging.basicConfig(
 )
 
 RATE_LIMIT_SEC = float(os.getenv("YF_RATE_LIMIT_SEC", "0.5"))
-PIPELINE_WORKERS = int(os.getenv("PIPELINE_WORKERS", "3"))
+PIPELINE_WORKERS = int(os.getenv("PIPELINE_WORKERS", "1"))
 
 _YF_LOCK = threading.Lock()
 _last_call = 0.0
@@ -136,9 +136,64 @@ _YF_SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 })
 
-def fetch_stock_data(symbol, start_date=None):
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
+ALPHA_HISTORY = os.getenv("ALPHA_HISTORY", "0") == "1"
+AV_RATE_LIMIT_SEC = float(os.getenv("AV_RATE_LIMIT_SEC", "12"))
+
+_AV_LOCK = threading.Lock()
+_av_last = 0.0
+def _av_wait():
+    global _av_last
+    with _AV_LOCK:
+        now = time.time()
+        delay = _av_last + AV_RATE_LIMIT_SEC - now
+        if delay > 0:
+            time.sleep(delay)
+        _av_last = time.time()
+
+def fetch_stock_data_alpha(symbol, start_date=None):
+    if not ALPHA_HISTORY or not ALPHA_VANTAGE_API_KEY:
+        return None
     try:
-        ticker = yf.Ticker(symbol, session=_YF_SESSION)
+        _av_wait()
+        r = requests.get(
+            "https://www.alphavantage.co/query",
+            params={"function": "TIME_SERIES_DAILY_ADJUSTED", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY},
+            timeout=25,
+        )
+        j = r.json()
+        ts = j.get("Time Series (Daily)")
+        if not ts:
+            logging.warning(f"Alpha returned no 'Time Series (Daily)' for {symbol}: "
+                            f"Note={j.get('Note')} Error={j.get('Error Message')}")
+            return None
+        rows = []
+        for d, row in ts.items():
+            rows.append({
+                "Date": datetime.strptime(d, "%Y-%m-%d").date(),
+                "Open": float(row.get("1. open", 0)),
+                "High": float(row.get("2. high", 0)),
+                "Low":  float(row.get("3. low", 0)),
+                "Close":float(row.get("4. close", 0)),
+                "Volume": int(float(row.get("6. volume", 0))),
+            })
+        df = pd.DataFrame(rows).sort_values("Date")
+        if start_date:
+            df = df[df["Date"] >= start_date]
+        df.set_index("Date", inplace=True)
+        return df
+    except Exception as e:
+        logging.warning(f"Alpha history failed for {symbol}: {e}")
+        return None
+
+def fetch_stock_data(symbol, start_date=None):
+    # Try Alpha first
+    df = fetch_stock_data_alpha(symbol, start_date)
+    if df is not None and not df.empty:
+        return df
+    # Yahoo fallback (no custom session)
+    try:
+        ticker = yf.Ticker(symbol)  # ← remove session arg
         if start_date:
             data = _with_backoff(lambda: ticker.history(start=start_date, end=datetime.today(), interval="1d"))
         else:
@@ -214,7 +269,7 @@ def main():
         return
 
     companies = get_sp500_companies()
-    with ThreadPoolExecutor(max_workers=PIPELINE_WORKERS) as executor:  # was 10
+    with ThreadPoolExecutor(max_workers=PIPELINE_WORKERS) as executor:  # set via env (1 recommended on free AV)
         futures = [executor.submit(process_company, c) for c in companies]
         for i, f in enumerate(as_completed(futures), start=1):
             try:

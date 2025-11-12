@@ -111,8 +111,8 @@ def _with_backoff(fn, retries=4, base=1.0):
             time.sleep(wait)
 
 def _yf_ticker(sym: str):
-    """Create a yfinance Ticker with a random session."""
-    return yf.Ticker(sym, session=_get_session())
+    """Create a yfinance Ticker; let yfinance manage its own session (curl_cffi)."""
+    return yf.Ticker(sym)
 
 # --------------------------------------------------------------------
 # 📦 Simple In-Memory Cache for Live Data
@@ -275,48 +275,66 @@ def _get_latest_date(symbol: str, conn: psycopg.Connection):
         r = cur.fetchone()
         return r[0]
 
+def _fetch_history_alpha(symbol: str):
+    if not ALPHA_VANTAGE_API_KEY:
+        return None
+    try:
+        _av_wait()
+        r = _AV_SESSION.get(
+            "https://www.alphavantage.co/query",
+            params={"function": "TIME_SERIES_DAILY_ADJUSTED", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY},
+            timeout=25,
+        )
+        j = r.json()
+        ts = j.get("Time Series (Daily)")
+        if not ts:
+            return None
+        records = []
+        for date_str, row in ts.items():
+            records.append({
+               "Date": datetime.strptime(date_str, "%Y-%m-%d").date(),
+               "Open": float(row.get("1. open", 0)),
+               "High": float(row.get("2. high", 0)),
+               "Low": float(row.get("3. low", 0)),
+               "Close": float(row.get("4. close", 0)),
+               "Volume": int(float(row.get("6. volume", 0)))
+            })
+        df = pd.DataFrame(records)
+        df.sort_values("Date", inplace=True)
+        df.set_index("Date", inplace=True)
+        return df
+    except Exception:
+        return None
+
 def _fetch_history(symbol: str, start_date=None):
-    """Fetch with multiple fallback strategies."""
-    session = _get_session()
-    t = yf.Ticker(symbol, session=session)
-    
-    # Strategy 1: Targeted date range (if start_date provided)
-    if start_date:
+    # Alpha path first if enabled
+    if ALPHA_HISTORY:
+        df_alpha = _fetch_history_alpha(symbol)
+        if df_alpha is not None and not df_alpha.empty:
+            if start_date:
+                df_alpha = df_alpha[df_alpha.index >= start_date]
+            print(f"✅ Alpha history {len(df_alpha)} rows for {symbol}")
+            return df_alpha
+    # Yahoo fallback (let yfinance manage session)
+    t = yf.Ticker(symbol)
+    def safe(fn):
         try:
-            df = _with_backoff(lambda: t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d", auto_adjust=False))
-            if df is not None and not df.empty:
-                print(f"✅ Fetched {len(df)} rows for {symbol} from {start_date}")
-                return df
+            return _with_backoff(fn)
         except Exception as e:
-            print(f"⚠️ Date range fetch failed for {symbol}: {e}")
-    
-    # Strategy 2: Recent 5 days (most reliable)
-    try:
-        df = _with_backoff(lambda: t.history(period="5d", interval="1d", auto_adjust=False))
+            if "Expecting value" in str(e):
+                return None
+            return None
+    if start_date:
+        df = safe(lambda: t.history(start=start_date, end=datetime.now(timezone.utc), interval="1d", auto_adjust=False))
         if df is not None and not df.empty:
-            print(f"✅ Fetched {len(df)} rows for {symbol} (5d fallback)")
             return df
-    except Exception as e:
-        print(f"⚠️ 5d fetch failed for {symbol}: {e}")
-    
-    # Strategy 3: 1 month (if 5d fails)
-    try:
-        df = _with_backoff(lambda: t.history(period="1mo", interval="1d", auto_adjust=False))
+    for period in ["5d", "1mo"]:
+        df = safe(lambda p=period: t.history(period=p, interval="1d", auto_adjust=False))
         if df is not None and not df.empty:
-            print(f"✅ Fetched {len(df)} rows for {symbol} (1mo fallback)")
             return df
-    except Exception as e:
-        print(f"⚠️ 1mo fetch failed for {symbol}: {e}")
-    
-    # Strategy 4: yf.download (different API endpoint)
-    try:
-        df = yf.download(symbol, period="5d", interval="1d", progress=False, session=session)
-        if df is not None and not df.empty:
-            print(f"✅ Fetched {len(df)} rows for {symbol} (download method)")
-            return df
-    except Exception as e:
-        print(f"⚠️ Download method failed for {symbol}: {e}")
-    
+    df = safe(lambda: yf.download(symbol, period="5d", interval="1d", progress=False))
+    if df is not None and not df.empty:
+        return df
     print(f"❌ All fetch strategies failed for {symbol}")
     return None
 
@@ -595,6 +613,7 @@ def health(conn: psycopg.Connection = Depends(get_db_connection)):
 # --------------------------------------------------------------------
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 LIVE_PROVIDER = os.getenv("LIVE_PROVIDER", "auto")  # alpha | yahoo | auto
+ALPHA_HISTORY = os.getenv("ALPHA_HISTORY", "0") == "1"   # <-- add this
 AV_RATE_LIMIT_SEC = float(os.getenv("AV_RATE_LIMIT_SEC", "12"))  # ~5 req/min free tier
 
 _AV_SESSION = requests.Session()

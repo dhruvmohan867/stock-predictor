@@ -334,25 +334,46 @@ REFRESH_SECRET = os.getenv("REFRESH_SECRET", "change_me")
 async def _stream_full_refresh(conn: psycopg.Connection):
     """
     Async generator that yields refresh progress as strings.
+    MODIFIED: Now only fetches and processes stale symbols.
     """
-    yield "🚀 Starting streamed background task: Full database refresh.\n"
+    yield "🚀 Starting streamed background task: Refreshing stale stocks.\n"
     
-    # Database calls are synchronous, so run them in a thread to not block the event loop
-    def get_symbols():
+    # --- MODIFICATION START: Fetch only stale symbols ---
+    def get_stale_symbols():
+        """Get symbols whose last update was before yesterday."""
+        # We use yesterday to account for market closures and timezones.
+        # A stock updated yesterday is considered fresh.
+        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         with conn.cursor() as cur:
-            cur.execute("SELECT symbol FROM stocks ORDER BY symbol")
+            cur.execute("""
+                SELECT s.symbol
+                FROM stocks s
+                LEFT JOIN (
+                    SELECT stock_id, MAX(date) as max_date
+                    FROM stock_prices
+                    GROUP BY stock_id
+                ) p ON s.id = p.stock_id
+                WHERE p.max_date IS NULL OR p.max_date < %s
+                ORDER BY s.symbol
+            """, (yesterday,))
             return [r[0] for r in cur.fetchall()]
 
-    symbols = await asyncio.to_thread(get_symbols)
+    symbols_to_refresh = await asyncio.to_thread(get_stale_symbols)
+    # --- MODIFICATION END ---
     
-    yield f"Found {len(symbols)} symbols to refresh.\n"
+    if not symbols_to_refresh:
+        yield "✅ All stocks are up-to-date. Nothing to do.\n"
+        return
+
+    yield f"Found {len(symbols_to_refresh)} stale symbols to refresh.\n"
     
     updated_count = 0
     failed_symbols = []
 
-    for i, symbol in enumerate(symbols):
+    for i, symbol in enumerate(symbols_to_refresh): # MODIFIED: Use the new list
         try:
-            yield f"🔄 ({i+1}/{len(symbols)}) Refreshing {symbol}...\n"
+            # The "i+1" now refers to the position in the stale list
+            yield f"🔄 ({i+1}/{len(symbols_to_refresh)}) Refreshing {symbol}...\n"
             
             # refresh_symbol is synchronous, run it in a thread
             result = await asyncio.to_thread(refresh_symbol, symbol, conn)
@@ -368,7 +389,7 @@ async def _stream_full_refresh(conn: psycopg.Connection):
             failed_symbols.append(symbol)
             
     yield "\n✅ Background refresh task complete.\n"
-    yield f"Total Updated: {updated_count}/{len(symbols)}\n"
+    yield f"Total Updated: {updated_count}/{len(symbols_to_refresh)}\n"
     if failed_symbols:
         yield f"Failed symbols: {', '.join(failed_symbols)}\n"
 

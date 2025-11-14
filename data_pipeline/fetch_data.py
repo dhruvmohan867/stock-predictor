@@ -189,6 +189,14 @@ def store_stock_data(symbol, company_name, df):
     if df is None or df.empty:
         return
     try:
+        # --- FIX START: Filter out future dates before storing ---
+        today = datetime.today().date()
+        df_filtered = df[df.index.date <= today]
+        if df_filtered.empty:
+            logging.warning(f"⏩ Skipping store for {symbol}, all fetched data was in the future.")
+            return
+        # --- FIX END ---
+
         with psycopg.connect(DATABASE_URL, prepare_threshold=None) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -209,7 +217,7 @@ def store_stock_data(symbol, company_name, df):
                         float(r["Close"]),
                         int(r["Volume"]) if not pd.isna(r["Volume"]) else 0,
                     )
-                    for date, r in df.iterrows()
+                    for date, r in df_filtered.iterrows() # <-- Use df_filtered
                 ]
                 cur.executemany("""
                     INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
@@ -217,7 +225,7 @@ def store_stock_data(symbol, company_name, df):
                     ON CONFLICT (stock_id, date) DO NOTHING
                 """, rows)
             conn.commit()
-        logging.info(f"💾 Stored {len(df)} records for {symbol}")
+        logging.info(f"💾 Stored {len(df_filtered)} records for {symbol}") # <-- Use df_filtered
     except Exception as e:
         logging.error(f"Database error for {symbol}: {e}")
 

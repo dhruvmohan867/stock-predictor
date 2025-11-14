@@ -296,19 +296,18 @@ def refresh_symbol(symbol: str, conn: psycopg.Connection, max_retries=2):
         if start > today:
             return {"updated": False, "reason": "up_to_date", "latest": str(latest_before)}
     
-    # Retry logic
-    df = None
-    for attempt in range(max_retries):
-        df = _fetch_history(symbol, start)
-        if df is not None and not df.empty:
-            break
-        if attempt < max_retries - 1:
-            wait = (attempt + 1) * 3  # 3s, 6s
-            print(f"🔄 Retry {attempt + 1}/{max_retries} for {symbol} in {wait}s...")
-            time.sleep(wait)
+    # --- FIX START: Improved fetching with fallback ---
+    df = _fetch_history(symbol, start)
+
+    # If the incremental fetch fails, try a broader fallback (e.g., last 5 days)
+    # This helps recover from cases where yfinance returns nothing for a specific start date.
+    if df is None or df.empty:
+        print(f"ℹ️ Incremental fetch for {symbol} yielded no data. Trying 5-day fallback.")
+        df = _fetch_history(symbol, start=None) # `start=None` makes it use default periods like '5d'
+    # --- FIX END ---
     
     if df is None or df.empty:
-        print(f"❌ All retries exhausted for {symbol}")
+        print(f"❌ All fetch strategies failed for {symbol}")
         return {
             "updated": False,
             "reason": "fetch_failed_after_retries",

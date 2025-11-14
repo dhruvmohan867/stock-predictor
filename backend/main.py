@@ -296,14 +296,14 @@ def refresh_symbol(symbol: str, conn: psycopg.Connection, max_retries=2):
         if start > today:
             return {"updated": False, "reason": "up_to_date", "latest": str(latest_before)}
     
-    # --- FIX START: Improved fetching with fallback ---
-    df = _fetch_history(symbol, start)
+    # --- FIX START: Correct the keyword argument name ---
+    df = _fetch_history(symbol, start_date=start) # <-- CHANGED: 'start' to 'start_date'
 
     # If the incremental fetch fails, try a broader fallback (e.g., last 5 days)
     # This helps recover from cases where yfinance returns nothing for a specific start date.
     if df is None or df.empty:
         print(f"ℹ️ Incremental fetch for {symbol} yielded no data. Trying 5-day fallback.")
-        df = _fetch_history(symbol, start=None) # `start=None` makes it use default periods like '5d'
+        df = _fetch_history(symbol, start_date=None) # <-- CHANGED: 'start' to 'start_date'
     # --- FIX END ---
     
     if df is None or df.empty:

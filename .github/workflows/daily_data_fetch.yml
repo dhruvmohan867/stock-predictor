@@ -1,0 +1,30 @@
+name: Daily Stock Data Fetch
+
+on:
+  workflow_dispatch: # Allows you to run this workflow manually from the Actions tab
+  schedule:
+    # Runs at 01:00 UTC and 13:00 UTC every day
+    # This gives you fresh data for both US and Indian markets
+    - cron: '0 1,13 * * *'
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Match your project's Python version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r data_pipeline/requirements.txt
+
+      - name: Run data fetch script
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python data_pipeline/fetch_data.py

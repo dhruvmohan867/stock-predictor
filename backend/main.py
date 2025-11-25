@@ -30,12 +30,16 @@ def _normalize_dsn(dsn: str) -> str:
 
 def get_pool():
     global pool
-    if pool is None:
+    # --- FIX START: Recreate pool if it's closed ---
+    if pool is None or pool.closed:
         dsn = os.getenv("DATABASE_URL")
         if not dsn:
             raise RuntimeError("DATABASE_URL missing.")
         dsn = _normalize_dsn(dsn)
+        # Re-initialize the pool
         pool = ConnectionPool(conninfo=dsn, min_size=1, max_size=10, kwargs={'prepare_threshold': None})
+        print("🔄 Database connection pool was closed. Recreated.")
+    # --- FIX END ---
     return pool
 
 def get_db_connection():

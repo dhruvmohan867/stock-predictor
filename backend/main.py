@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import joblib
 from psycopg_pool import ConnectionPool
 import pandas as pd
+import numpy as np # <-- Make sure numpy is imported
 import math
 import time
 import threading
@@ -239,9 +240,17 @@ def predict(req: dict, conn: psycopg.Connection = Depends(get_db_connection)):
     data = query_stock_data(req["symbol"], conn)
     if not data or not data["prices"]:
         raise HTTPException(status_code=404, detail="No data available")
+    
+    # --- FIX START: Use numpy for prediction, not pandas ---
     latest = data["prices"][0]
-    df = pd.DataFrame([latest])
-    prediction = model.predict(df[["open","high","low","close","volume"]])[0]
+    # The model was trained on features in this specific order
+    feature_order = ['open', 'high', 'low', 'close', 'volume']
+    # Create a numpy array from the latest data in the correct order
+    features = np.array([[latest[key] for key in feature_order]])
+    
+    prediction = model.predict(features)[0]
+    # --- FIX END ---
+
     # Use the new database-driven get_live_info
     live = get_live_info(req["symbol"], conn)
     return {

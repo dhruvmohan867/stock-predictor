@@ -3,7 +3,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { TrendingUp, DollarSign, Search, BarChart3, AlertCircle, Loader, Building, ArrowUp, ArrowDown, Briefcase, Activity, BrainCircuit, Sun, Moon, BookOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://stock-predictor-ujiu.onrender.com';
+const API_BASE = import.meta.env.VITE_API_BASE;
 
 const WATCHLIST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "RELIANCE.NS", "TCS.NS", "TSLA", "^NSEI", "^GSPC"];
 

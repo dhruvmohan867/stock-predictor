@@ -12,4 +12,6 @@ passlib[bcrypt]>=1.7.4
 python-jose[cryptography]==3.3.0
 yfinance==0.2.40
 fastapi-utils==0.7.0          # pin for stability
-typing-inspect==0.9.0         # <-- REQUIRED by fastapi-utils
+typing-inspect==0.9.0  
+pandas==2.2.3           
+scikit-learn==1.6.0      

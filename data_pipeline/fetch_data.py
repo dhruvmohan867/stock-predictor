@@ -93,8 +93,14 @@ def get_sp500_stocks():
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).text
         df = pd.read_html(StringIO(html))[0]
+        
+        # --- FIX START: Use the new column names from Wikipedia ---
+        # The column for the ticker is now 'Ticker symbol' and the company name is 'Security'
+        df.rename(columns={'Ticker symbol': 'Symbol'}, inplace=True)
         df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
         stocks = [{"symbol": row['Symbol'], "name": row['Security']} for _, row in df.iterrows()]
+        # --- FIX END ---
+
         logging.info(f"✅ Fetched {len(stocks)} S&P 500 stocks.")
         return stocks
     except Exception as e:

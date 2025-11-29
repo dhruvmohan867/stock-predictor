@@ -217,15 +217,20 @@ def store_stock_data(symbol, company_name, df):
                         float(r["Close"]),
                         int(r["Volume"]) if not pd.isna(r["Volume"]) else 0,
                     )
-                    for date, r in df_filtered.iterrows() # <-- Use df_filtered
+                    for date, r in df_filtered.iterrows()
                 ]
                 cur.executemany("""
                     INSERT INTO stock_prices (stock_id, date, open, high, low, close, volume)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (stock_id, date) DO NOTHING
+                    ON CONFLICT (stock_id, date) DO UPDATE
+                      SET open = EXCLUDED.open,
+                          high = EXCLUDED.high,
+                          low = EXCLUDED.low,
+                          close = EXCLUDED.close,
+                          volume = EXCLUDED.volume
                 """, rows)
             conn.commit()
-        logging.info(f"💾 Stored {len(df_filtered)} records for {symbol}") # <-- Use df_filtered
+        logging.info(f"💾 Stored {len(df_filtered)} records for {symbol}")
     except Exception as e:
         logging.error(f"Database error for {symbol}: {e}")
 

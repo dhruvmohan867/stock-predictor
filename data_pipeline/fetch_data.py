@@ -92,15 +92,19 @@ def get_sp500_stocks():
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).text
-        df = pd.read_html(StringIO(html))[0]
         
-        # --- FIX START: Use the new column names from Wikipedia ---
-        # The column for the ticker is now 'Ticker symbol' and the company name is 'Security'
+        # --- FIX: Target the specific table by ID 'constituents' ---
+        dfs = pd.read_html(StringIO(html), attrs={"id": "constituents"})
+        if not dfs:
+            raise Exception("Could not find S&P 500 table (id='constituents')")
+        df = dfs[0]
+        
+        # Wikipedia column is 'Symbol', no need to rename 'Ticker symbol' usually, 
+        # but we rename it just in case they revert the column name change.
         df.rename(columns={'Ticker symbol': 'Symbol'}, inplace=True)
+        
         df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
         stocks = [{"symbol": row['Symbol'], "name": row['Security']} for _, row in df.iterrows()]
-        # --- FIX END ---
-
         logging.info(f"✅ Fetched {len(stocks)} S&P 500 stocks.")
         return stocks
     except Exception as e:
@@ -249,21 +253,28 @@ def process_company(company):
     latest = get_latest_date(symbol)
     start_date = None
 
-    # --- RESUME LOGIC START ---
-    # If we have data and the latest date is today or yesterday, skip it.
-    # This makes the pipeline resumable and efficient.
+    # --- FIX: Modified Resume Logic ---
     if latest:
         today = datetime.today().date()
-        if latest >= today - timedelta(days=1):
-            logging.info(f"✅ Skipping '{symbol}', already up-to-date ({latest}).")
-            return # Exit this function for this symbol
-        start_date = latest + timedelta(days=1)
-    # --- RESUME LOGIC END ---
         
+        # If the database has data from BEFORE today, fetch starting tomorrow
+        if latest < today:
+            start_date = latest + timedelta(days=1)
+        
+        # If the database ALREADY has today's data (from the morning run),
+        # we MUST set start_date = today to re-fetch and update it with closing prices.
+        elif latest == today:
+            start_date = today
+            # We do NOT return/skip here. We proceed to fetch.
+        
+        # If somehow we have future data, we skip.
+        elif latest > today:
+            logging.info(f"✅ Skipping '{symbol}', data is in future ({latest}).")
+            return
+
     df = fetch_stock_data(symbol, start_date)
     if df is not None and not df.empty:
         store_stock_data(symbol, name, df)
-
 def main():
     logging.info("🚀 Starting Stock Data Fetch Pipeline...")
     if not DATABASE_URL:

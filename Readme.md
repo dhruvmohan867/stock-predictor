@@ -1,60 +1,51 @@
-# 📈 Stock Price Predictor
+# 📈 AlphaPredict: Stock Analysis & Prediction Platform
 
-A full-stack web application that fetches real-time stock data, stores it in a PostgreSQL database, and uses machine learning to predict next-day closing prices. Built with FastAPI, React, and scikit-learn.
+A full-stack web application that fetches daily stock data, stores it in a PostgreSQL database, and uses a Gradient Boosting model to predict next-day closing prices. Built with FastAPI, React, and LightGBM.
 
 ![Stock Predictor Dashboard](./frontend/public/Dashboard.png)
 
 ## ✨ Features
 
-- 🔐 **User Authentication**: Sign up/sign in with email & password or Google OAuth
-- 📊 **Real-Time Stock Data**: Fetches historical prices from Yahoo Finance via `yfinance`
-- 🤖 **ML Predictions**: Linear regression model predicts next-day closing prices
-- 🎨 **Modern UI**: Dark-themed dashboard with interactive charts (Recharts)
-- 🔒 **Secure**: JWT-based authentication, bcrypt password hashing
-- 💾 **Persistent Storage**: PostgreSQL database hosted on Supabase
+- 🚀 **High-Performance Backend**: Built with FastAPI, serving data asynchronously.
+- 🧠 **Advanced ML Predictions**: Uses a **LightGBM (Gradient Boosting)** model for higher accuracy predictions.
+- 🔄 **Automated Data Pipeline**: A **GitHub Actions** workflow fetches daily data for over 1,000 stocks from US (S&P 500) and Indian (NIFTY 500) markets using `yfinance`.
+- 📊 **Interactive Dashboard**: A modern, responsive UI built with React and Vite, featuring interactive charts (Recharts) and a dark mode.
+- 💾 **Robust & Scalable Database**: Uses PostgreSQL hosted on Supabase for reliable, persistent data storage.
+- ☁️ **Cloud-Native Architecture**: Deploys separate components to the best-suited platforms (Vercel, Render, GitHub Actions) for optimal performance and scalability.
 
 ## 🚀 Tech Stack
 
-**Frontend**
-- React 19 + Vite
-- TailwindCSS for styling
-- Recharts for data visualization
-- Framer Motion for animations
-- Lucide React for icons
-
-**Backend**
-- FastAPI (Python)
-- PostgreSQL (Supabase)
-- scikit-learn for ML
-- passlib + python-jose for auth
-- Google OAuth2 integration
+| Component | Technology |
+|-----------|------------|
+| **Frontend** | React 19, Vite, TailwindCSS, Recharts, Framer Motion |
+| **Backend** | FastAPI, Python 3.11, Uvicorn |
+| **Database** | PostgreSQL (hosted on Supabase) |
+| **ML Model** | **LightGBM** (Gradient Boosting), Scikit-learn, Joblib |
+| **Data Pipeline** | **GitHub Actions**, Python, Pandas, `yfinance` |
+| **Authentication** | (Helpers in place for JWT & bcrypt) |
 
 ## 📦 Project Structure
 
 ```
 stock-predi/
+├── .github/workflows/
+│   └── daily_data_fetch.yml # Automated daily data collection workflow
 ├── backend/
-│   ├── main.py              # FastAPI app + endpoints
-│   ├── auth.py              # JWT & password utilities
-│   └── requirements.txt     # Python dependencies
+│   ├── main.py              # FastAPI app, API endpoints
+│   ├── ml_model/            # Copy of the deployed model
+│   └── requirements.txt     # Backend Python dependencies
+├── data_pipeline/
+│   ├── fetch_data.py        # Script to fetch data from yfinance
+│   └── db_setup.sql         # Initial database schema
 ├── frontend/
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── AuthForm.jsx      # Login/signup UI
-│   │   │   └── Dashboard.jsx     # Main dashboard
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   ├── package.json
-│   └── .env                 # VITE_API_BASE, VITE_GOOGLE_CLIENT_ID
-├── data_pipeline/
-│   ├── fetch_data.py        # Alpha Vantage data ingestion
-│   └── db_setup.sql         # Database schema
+│   │   └── components/
+│   │       └── Dashboard.jsx  # The main UI component
+│   └── package.json         # Frontend Node.js dependencies
 ├── ml_model/
-│   ├── train.py             # Model training script
-│   └── stock_predictor.joblib  # Trained model
-├── .env                      # Backend secrets (not in git)
-├── .gitignore
-├── LICENSE
+│   ├── train.py             # Script to train the LightGBM model
+│   └── stock_predictor.joblib # The trained model artifact
+├── Dockerfile                 # Containerizes the backend for deployment
 └── README.md
 ```
 
@@ -63,9 +54,15 @@ stock-predi/
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- PostgreSQL / Supabase 
-- Alpha Vantage API key (free at [alphavantage.co](https://www.alphavantage.co))
+- A PostgreSQL database (e.g., via Supabase)
 
+### Environment Setup
+This project uses environment variables for configuration. For local development, you can set them in your shell before running the application.
+
+**Required Variables:**
+- `DATABASE_URL`: Your full PostgreSQL connection string.
+- `SECRET_KEY`: A long, random string for signing tokens.
+- `GOOGLE_CLIENT_ID`: Your Google OAuth Client ID.
 
 ### Backend Setup
 
@@ -87,19 +84,20 @@ stock-predi/
 3. **Install dependencies**
    ```bash
    pip install -r backend/requirements.txt
+   pip install -r data_pipeline/requirements.txt
    ```
 
-
-
 4. **Set up database**
-   Run the SQL schema in `data_pipeline/db_setup.sql` on your PostgreSQL instance.
+   Run the SQL schema from `data_pipeline/db_setup.sql` on your PostgreSQL instance to create the necessary tables.
 
 5. **Fetch initial stock data**
+   *(Ensure `DATABASE_URL` is set in your shell)*
    ```bash
    python data_pipeline/fetch_data.py
    ```
 
 6. **Train the ML model**
+   *(This will create the `stock_predictor.joblib` file)*
    ```bash
    python ml_model/train.py
    ```
@@ -108,7 +106,7 @@ stock-predi/
    ```bash
    uvicorn backend.main:app --reload
    ```
-   Backend runs at `http://127.0.0.1:8000`
+   The backend will be available at `http://127.0.0.1:8000`.
 
 ### Frontend Setup
 
@@ -123,7 +121,7 @@ stock-predi/
    ```
 
 3. **Configure environment variables**
-   Create `frontend/.env`:
+   For the frontend, Vite uses a `.env` file. Create `frontend/.env` with the following content:
    ```env
    VITE_API_BASE=http://127.0.0.1:8000
    VITE_GOOGLE_CLIENT_ID=your_google_client_id
@@ -133,105 +131,47 @@ stock-predi/
    ```bash
    npm run dev
    ```
-   Frontend runs at `http://localhost:5173`
+   The frontend will be available at `http://localhost:5173`.
 
 ## 🌐 Deployment
 
-### Backend (Render)
+This project is deployed as three separate services.
 
-1. Create a new **Web Service** on [Render](https://render.com)
-2. Connect your GitHub repository
+### 1. Data Pipeline (GitHub Actions)
+The pipeline runs automatically on a schedule. It requires the `DATABASE_URL` to be set as a repository secret in GitHub.
+1. In your GitHub repo, go to **Settings > Secrets and variables > Actions**.
+2. Create a new repository secret named `DATABASE_URL` and paste your Supabase connection string.
+
+### 2. Backend (Render)
+1. Create a new **Web Service** on Render.
+2. Connect your GitHub repository.
 3. Configure:
-   - **Build Command**: `pip install -r backend/requirements.txt`
-   - **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-4. Add environment variables:
-   - `DATABASE_URL`
-   - `SECRET_KEY`
-   - `ALPHA_VANTAGE_API_KEY`
-   - `GOOGLE_CLIENT_ID`
-5. Deploy and note your API URL (e.g., `https://stock-api.onrender.com`)
+   - **Root Directory**: `backend`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+4. Add your `DATABASE_URL`, `SECRET_KEY`, and `GOOGLE_CLIENT_ID` as environment variables in the Render dashboard.
+5. Deploy and note your API URL.
 
-### Frontend (Vercel)
-
-1. Import your repository on [Vercel](https://vercel.com)
-2. Framework preset: **Vite**
-3. Root directory: `frontend`
-4. Add environment variables:
-   - `VITE_API_BASE=https://stock-api.onrender.com`
-   - `VITE_GOOGLE_CLIENT_ID=your_client_id`
-5. Deploy
-
-### Post-Deployment
-
-1. **Update CORS**: Add your Vercel URL to `origins` in `backend/main.py`
-2. **Google OAuth**: Add your production frontend URL to "Authorized JavaScript origins" in Google Cloud Console
-3. **Redeploy backend** to apply CORS changes
+### 3. Frontend (Vercel)
+1. Import your repository on Vercel.
+2. Configure:
+   - **Framework Preset**: Vite
+   - **Root Directory**: `frontend`
+3. Add environment variables:
+   - `VITE_API_BASE`: Your backend URL from Render.
+   - `VITE_GOOGLE_CLIENT_ID`: Your Google Client ID.
+4. Deploy.
 
 ## 📖 API Endpoints
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/` | No | Health check |
-| GET | `/api/stocks/{symbol}` | No | Get stock price history |
-| POST | `/api/predict` | No | Predict next-day close price |
-| GET | `/health/db` | No | Database connectivity check |
-
-> Note: Auth helpers exist in backend/auth.py, but routes like `/register`, `/token`, and `/google-login` are not implemented yet.
-
-## 🔐 Environment Variables Reference
-
-**Root `.env` (Backend)**
-```env
-DATABASE_URL=postgresql://...
-ALPHA_VANTAGE_API_KEY=your_key
-SECRET_KEY=generate_with_openssl_rand_hex_32
-GOOGLE_CLIENT_ID=your_oauth_client_id
-```
-
-**`frontend/.env`**
-```env
-VITE_API_BASE=http://127.0.0.1:8000  # or production URL
-VITE_GOOGLE_CLIENT_ID=your_oauth_client_id
-```
-
-## 🧪 Testing
-
-```bash
-# Backend
-curl http://127.0.0.1:8000/health/db
-
-# Frontend (after login)
-# Check browser console for successful API calls
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/` | Health check for the API server. |
+| GET | `/api/stocks/{symbol}` | Get historical price data for a stock. |
+| GET | `/api/symbols` | Get a list of all available stock symbols. |
+| POST | `/api/predict` | Predict the next-day closing price for a stock. |
+| GET | `/health/db` | Check the database connection status. |
 
 ## 📝 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 🙏 Acknowledgments
-
-- [Alpha Vantage](https://www.alphavantage.co/) for stock data API
-- [Supabase](https://supabase.com/) for database hosting
-- [FastAPI](https://fastapi.tiangolo.com/) for the backend framework
-- [Recharts](https://recharts.org/) for beautiful charts
-
-## 📧 Contact
-
-Dhruv Mohan Shukla  - [@linkedin](https://www.linkedin.com/in/dhruvmohanshukla/) - 
-dhruvmohanshukla@gmail.com
-
-
-
----
-
-Made with ❤️ by Dhruv Mohan Shukla

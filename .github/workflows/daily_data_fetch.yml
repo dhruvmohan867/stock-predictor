@@ -5,7 +5,10 @@ on:
   schedule:
     # Runs at 01:00 UTC and 13:00 UTC every day
     # This gives you fresh data for both US and Indian markets
-    - cron: '0 1,13 * * *'
+     - cron: '45 3 * * *'  
+     - cron: '0 10 * * *'  
+     - cron: '30 14 * * *' 
+     - cron: '0 21 * * *' 
 
 jobs:
   fetch-data:

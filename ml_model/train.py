@@ -4,7 +4,9 @@ import psycopg
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
+# --- MODIFICATION START: Import LightGBM ---
+import lightgbm as lgb
+# --- MODIFICATION END ---
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
 from dotenv import load_dotenv
@@ -44,10 +46,24 @@ def train_and_save_model():
     split_index = int(len(df) * 0.8)
     X_train, y_train = X[:split_index], y[:split_index]
     X_test, y_test = X[split_index:], y[split_index:]
-    # Train a simple Linear Regression model
-    print("Training Linear Regression model...")
-    model = LinearRegression()
-    model.fit(X_train, y_train)
+    
+    # --- MODIFICATION START: Use a more powerful LightGBM model ---
+    print("Training LightGBM Gradient Boosting model...")
+    model = lgb.LGBMRegressor(
+        objective='regression_l1',  # MAE
+        n_estimators=1000,          # Number of trees
+        learning_rate=0.05,
+        num_leaves=31,
+        n_jobs=-1,                  # Use all available CPU cores
+        seed=42
+    )
+    
+    # Use early stopping to prevent overfitting and find the best number of trees
+    model.fit(X_train, y_train,
+              eval_set=[(X_test, y_test)],
+              eval_metric='mae',
+              callbacks=[lgb.early_stopping(100, verbose=False)])
+    # --- MODIFICATION END ---
 
     # --- FIX STARTS HERE: Comprehensive Model Evaluation ---
 

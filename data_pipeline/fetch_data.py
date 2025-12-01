@@ -174,7 +174,8 @@ def fetch_stock_data(symbol, start_date=None):
         # Fetch data from the start date. If no start date, get max history.
         data = _with_backoff(lambda: ticker.history(
             start=start_date, 
-            end=datetime.today(), 
+            # --- FIX: Add +1 day to include 'today' in the fetch range ---
+            end=datetime.today() + timedelta(days=1), 
             interval="1d",
             auto_adjust=False # Important for raw OHLCV data
         ))

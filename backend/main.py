@@ -24,7 +24,8 @@ load_dotenv()
 pool = None
 
 def _normalize_dsn(dsn: str) -> str:
-    if ("supabase.co" in dsn or "supabase.com" in dsn) and "sslmode=" not in dsn:
+    # Enforce SSL for hosted Postgres providers (Render/Supabase/etc.)
+    if "sslmode=" not in dsn:
         return f"{dsn}{'?' if '?' not in dsn else '&'}sslmode=require"
     return dsn
 

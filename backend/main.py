@@ -50,19 +50,25 @@ def get_db_connection():
 # -------------------- FASTAPI APP & CORS --------------------
 app = FastAPI()
 
-# --- FIX START: Use a regular expression for Vercel origins ---
-# This will match your main production URL and all preview URLs.
-FRONTEND_ORIGIN_REGEX = r"https?://.*\.vercel\.app" 
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+
+
+ALLOWED_ORIGINS = [
+    FRONTEND_URL,
+    "https://stock-predictor-five-opal.vercel.app", 
+    "http://localhost:5173",                       
+    "http://localhost:3000",                       
+]
+
+# 3. Apply Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], # Keep localhost for local dev
-    allow_origin_regex=FRONTEND_ORIGIN_REGEX, # Add the regex
+    allow_origins=ALLOWED_ORIGINS, 
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],           
+    allow_headers=["*"],           
 )
-# --- FIX END ---
 
 
 # -------------------- Yahoo Finance Helper --------------------

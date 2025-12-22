@@ -4,7 +4,7 @@ import psycopg
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Response, Query, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import asyncio
@@ -231,6 +231,10 @@ def list_symbols(conn: psycopg.Connection = Depends(get_db_connection)):
 
 @app.get("/health/db")
 def health(conn: psycopg.Connection = Depends(get_db_connection)):
-    with conn.cursor() as c:
-        c.execute("SELECT 1")
-    return {"ok": True}
+    try:
+        with conn.cursor() as c:
+            c.execute("SELECT 1")
+            return {"ok": True}
+    except Exception as e:
+        # Log and surface minimal diagnostics
+        return JSONResponse(status_code=500, content={"ok": False, "error": e.__class__.__name__, "detail": str(e)})

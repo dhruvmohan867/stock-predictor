@@ -52,16 +52,17 @@ def get_db_connection():
 app = FastAPI()
 
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "").rstrip("/")
 
 
 ALLOWED_ORIGINS = [
-    FRONTEND_URL,
-    "https://stock-predictor-five-opal.vercel.app", 
-    "http://localhost:5173",                       
-    "http://localhost:3000",                       
+    "http://localhost:5173",    # Local Vite (Common)
+    "http://127.0.0.1:5173",    # Local Vite (IP version)
+    "http://localhost:3000",    # Local React (Alternative)
+    "https://stock-predictor-five-opal.vercel.app", # Your Production URL
 ]
-
+if FRONTEND_URL and FRONTEND_URL not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(FRONTEND_URL)
 # 3. Apply Middleware
 app.add_middleware(
     CORSMiddleware,
